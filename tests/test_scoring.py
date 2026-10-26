@@ -172,3 +172,20 @@ def test_record_ignores_a_closure_from_the_model_and_refresh_skips_the_current_c
     with pytest.raises(SystemExit, match="rule history unavailable"):
         history.cmd_context({"caseNumber": "2", "rules": ["R"]})
     assert asked == [["id-1"]]
+
+
+def test_closure_refresh_reaches_every_open_case_and_missing_auth_reads_as_unavailable(tmp_path, monkeypatch):
+    import pytest
+    import history
+    monkeypatch.setattr(history, "HOME", tmp_path)
+    monkeypatch.setattr(history, "STORE", tmp_path / "verdicts.jsonl")
+    monkeypatch.delenv("NEO4J_AUTH", raising=False)
+    for n in range(1, 16):
+        history.append({"type": "verdict", "caseNumber": str(n), "caseId": f"id-{n}", "model": "m"})
+    asked = []
+    monkeypatch.setattr(history, "fetch_closures", lambda ids: asked.append(list(ids)) or {})
+    for _ in range(30):
+        with pytest.raises(SystemExit, match="rule history unavailable: NEO4J_AUTH"):
+            history.cmd_context({"caseNumber": "15", "rules": ["R"]})
+    assert all(len(batch) == history.REFRESH_PER_CONTEXT and "id-15" not in batch for batch in asked)
+    assert {i for batch in asked for i in batch} == {f"id-{n}" for n in range(1, 15)}

@@ -31,6 +31,7 @@ excluded, so its own closure cannot leak into its score.
 """
 import json
 import os
+import random
 import re
 import subprocess
 import sys
@@ -130,7 +131,7 @@ def driver():
     uri = os.environ.get("NEO4J_URI", "bolt://localhost:7688")
     auth = os.environ.get("NEO4J_AUTH") or _env_file().get("NEO4J_AUTH", "")
     if "/" not in auth:
-        sys.exit(f"NEO4J_AUTH is not set: expected user/password in the environment or {HOME / 'neo4j.env'}")
+        sys.exit(f"rule history unavailable: NEO4J_AUTH is not set, expected user/password in the environment or {HOME / 'neo4j.env'}")
     user, password = auth.split("/", 1)
     return GraphDatabase.driver(uri, auth=(user, password))
 
@@ -261,7 +262,10 @@ def cmd_context(data):
     # Earlier cases that were open when scored may have closed since. Never the current case.
     pending = {v["caseId"]: c for (c, _), v in verdicts.items()
                if c != current and c not in outcomes and v.get("caseId")}
-    save_closures(dict(list(pending.items())[:REFRESH_PER_CONTEXT]))
+    # A random pick, so cases that stay open can't keep the rest from ever being checked.
+    # ponytail: stateless; track last-checked per case if the pending set grows far past the limit.
+    picked = random.sample(list(pending), min(len(pending), REFRESH_PER_CONTEXT))
+    save_closures({case_id: pending[case_id] for case_id in picked})
     verdicts, outcomes = load()
     from neo4j.exceptions import Neo4jError, ServiceUnavailable
     try:

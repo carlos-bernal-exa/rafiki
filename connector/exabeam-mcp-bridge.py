@@ -207,7 +207,11 @@ async def _check():
 
 async def _closure(case_ids):
     async def one(session, case_id):
-        result = await session.call_tool("exabeam_get_case_details", {"arg0": {"caseId": case_id}})
+        try:
+            result = await session.call_tool("exabeam_get_case_details", {"arg0": {"caseId": case_id}})
+        except Exception as e:  # noqa: BLE001  one bad case must not lose the others' closures
+            sys.stderr.write(f"bridge: closure lookup for {case_id} failed: {e!r}\n")
+            return {"stage": None, "closedReason": None}
         for block in result.content:
             try:
                 data = json.loads(getattr(block, "text", "") or "")
