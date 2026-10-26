@@ -1,0 +1,12 @@
+{
+  "name": "aiscoring",
+  "version": "0.1.0",
+  "description": "Read-only Exabeam New-Scale case scoring. Investigates a case the AIScoring way (corroboration by tactics and by independent sources, findings over descriptions, a mandatory devil's advocate) and returns a three-way verdict with a confidence computed from the evidence, not self-reported.",
+  "author": {
+    "name": "Exabeam",
+    "url": "https://www.exabeam.com/"
+  },
+  "license": "Apache-2.0",
+  "keywords": ["soc", "alert-triage", "case-scoring", "exabeam", "mcp", "claude-code"],
+  "skills": "./skills/"
+}

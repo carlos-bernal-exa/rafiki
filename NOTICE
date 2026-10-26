@@ -1,0 +1,6 @@
+aiscoring
+Copyright 2026 Exabeam, Inc.
+
+Includes code from socxen (https://github.com/open-agent-ai-security/socxen), Apache-2.0:
+connector/canonicalize.py, connector/exabeam-mcp-bridge.py (modified),
+skills/score-case/reference/search-cookbook.md.
