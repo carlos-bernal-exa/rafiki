@@ -133,7 +133,9 @@ def driver():
     if "/" not in auth:
         sys.exit(f"rule history unavailable: NEO4J_AUTH is not set, expected user/password in the environment or {HOME / 'neo4j.env'}")
     user, password = auth.split("/", 1)
-    return GraphDatabase.driver(uri, auth=(user, password))
+    # OFF: the rebuild query names labels and properties that don't exist in an empty graph, and
+    # the server's "unknown label" warnings otherwise fill the output the model reads.
+    return GraphDatabase.driver(uri, auth=(user, password), notifications_min_severity="OFF")
 
 
 def _env_file():
