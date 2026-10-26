@@ -6,7 +6,7 @@
 # aiscoring
 
 A Claude Code plugin that scores Exabeam New-Scale cases. Give it a case number and it pulls the
-threat timeline, a sample of raw logs and entity context through the Exabeam MCP. It returns
+case, its threat timeline and a sample of raw logs through the Exabeam MCP. It returns
 `LIKELY_TRUE_POSITIVE`, `INVESTIGATE` or `LIKELY_FALSE_POSITIVE`, with a confidence computed from
 the evidence.
 
@@ -14,12 +14,17 @@ It is read-only. It never updates, closes or annotates anything in Exabeam.
 
 ## Where it comes from
 
-The method is AIScoring's `deep-investigation` prompt (`AIScoring/server/prompts/deep-investigation.md`),
-moved from a web app into a skill that gathers its own evidence. The Exabeam bridge comes from socxen.
+The reasoning is AIScoring's `deep-investigation` prompt, copied unchanged to
+`skills/score-case/reference/deep-investigation.md`. A test fails if it drifts from the AIScoring
+checkout next to this repo. `SKILL.md` only adds what a web app's code did before the model ran:
+gathering the evidence, plus a table mapping the prompt's payload names to what was gathered.
+The Exabeam bridge comes from socxen.
 
 | Piece | Source | Here |
 |---|---|---|
-| Investigation method | AIScoring `deep-investigation.md` | `skills/score-case/SKILL.md` |
+| Investigation prompt (verbatim) | AIScoring `deep-investigation.md` | `skills/score-case/reference/` |
+| Evidence gathering | AIScoring `exabeam.ts`, `scoring.ts` `buildPayload` | `skills/score-case/SKILL.md` |
+| Hiding the disposition | AIScoring `stripLabels` | the bridge's `strip_labels` |
 | Verdict shape | AIScoring `verdict-schema.ts` | JSON in `SKILL.md`, checked by `scoring.py confidence` |
 | Computed confidence | AIScoring `confidence.ts` | `scoring.py confidence` |
 | Raw-log sampling (10 per rule, 50 searches, 100 lines) | AIScoring `planRawLogSearches` | `scoring.py plan` |
@@ -34,15 +39,32 @@ AIScoring against analyst closures, so retune them there and copy them over.
 ## How it differs from socxen
 
 socxen investigates and then acts: it opens cases, writes notes, and dismisses alerts once you
-approve. aiscoring only scores. The bridge has an allowlist of 16 read tools. Write tools don't
+approve. aiscoring only scores. The bridge has an allowlist of 15 read tools. Write tools don't
 appear in `list_tools`, and `call_tool` refuses them, so no prompt can make it change a case.
 That is also why the permission pack, the write-side neutralizer and the audit log were left
 out. The allowlist does what they did.
 
-Two habits carried over from AIScoring matter for accuracy:
+Where it differs from AIScoring:
 
-- The skill ignores `stage`, `closedReason`, the assignee and case notes. A closed case carries
-  the analyst's verdict, and a score that reads it is copying the answer.
+- **The model gathers the evidence.** In AIScoring, code fetches the case and logs before the
+  model runs. Here the model calls the MCP tools itself, following `SKILL.md`.
+- **The bridge hides the answer.** AIScoring's code strips stage, closure, queue and assignee
+  before the model sees a case. Here the bridge strips the same keys, plus status fields, from
+  every case and alert result, and doesn't expose case notes. A result it can't parse as JSON is
+  withheld, not passed through. Closure reasons for the history are fetched by `history.py`
+  through `exabeam-mcp-bridge.py --closure`, outside the model's view.
+- **Raw logs use AIScoring's fields.** Each detection's own `search_query`, keeping `rawLogs`
+  (the original log line, where finding fields like `indicators` and `riskState` live), the
+  timestamp and vendor/product.
+- **No entity context.** The MCP has no entity lookup, so roles, departments and service-account
+  flags aren't available. The skill handles that the way AIScoring handles a prompt variant that
+  omits a section: it tells the model the section is withheld on purpose, and it doesn't count as
+  a missing source, so confidence isn't marked down for it on every case.
+- **The model is whichever Claude model the session runs.** AIScoring's default for this prompt
+  is `gemini-3.8-flash`, so the same prompt may score differently here.
+
+One habit carried over unchanged:
+
 - The model's own `confidence` gets reported as `selfReported` and nothing else. The number shown
   comes from the indicators, the tactic or source count, evidence gaps, and sources that failed
   to load.
@@ -128,5 +150,5 @@ Then ask it to "score case 5968".
 ## Tests
 
 ```bash
-uv run --with pytest pytest -q tests/
+uv run --with pytest --with neo4j pytest -q tests/
 ```

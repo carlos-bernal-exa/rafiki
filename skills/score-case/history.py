@@ -6,10 +6,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Scoring history: an append-only JSONL store, projected into Neo4j for rule history.
 
-  uv run history.py record                  < record.json    # after scoring a case
+  uv run history.py record   < record.json    # after scoring a case
   uv run history.py feedback --case N --label FP|TP --note "<why>" [--analyst NAME]
-  uv run history.py label --case N --reason "<closedReason>"  # closure reason from Exabeam
-  uv run history.py context                 < current.json   # rule history for a case being scored
+  uv run history.py context  < current.json   # rule history for a case being scored
+
+Exabeam closure reasons are fetched here, through the bridge's --closure, never by the model:
+the bridge strips them from everything the model reads, so a case cannot see its own answer.
 
 The JSONL at $AISCORING_HOME/verdicts.jsonl (default ~/.aiscoring) is the source of truth.
 Neo4j is a projection with AIScoring's schema plus the analyst's word on each case:
@@ -30,6 +32,7 @@ excluded, so its own closure cannot leak into its score.
 import json
 import os
 import re
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,6 +48,8 @@ FP_REASONS = [r"false positive", r"duplicate", r"benign", r"policy or setup", r"
 TP_REASONS = [r"confirmed threat", r"malicious", r"true positive", r"high risk"]
 
 EXAMPLES_PER_RULE = 5
+REFRESH_PER_CONTEXT = 10  # unlabelled earlier cases whose closure is re-checked per lookup
+BRIDGE = Path(__file__).resolve().parents[2] / "connector" / "exabeam-mcp-bridge.py"
 
 
 def label_from_reason(reason):
@@ -93,6 +98,29 @@ def now():
 
 def entity_ids(users, devices):
     return [f"user:{u}" for u in users or [] if u] + [f"device:{d}" for d in devices or [] if d]
+
+
+# ---- closures ----
+
+def fetch_closures(case_ids):
+    """{caseId: {"stage", "closedReason"}} from Exabeam, or {} if the lookup fails. A failed
+    lookup only means fewer labels; it must not stop a score from being recorded."""
+    if not case_ids:
+        return {}
+    try:
+        out = subprocess.run(["uv", "run", "--quiet", str(BRIDGE), "--closure", *case_ids],
+                             capture_output=True, text=True, timeout=120, check=True)
+        return json.loads(out.stdout)
+    except (subprocess.SubprocessError, OSError, ValueError) as e:
+        sys.stderr.write(f"closure lookup failed, continuing without it: {e}\n")
+        return {}
+
+
+def save_closures(case_numbers_by_id):
+    """Fetch closures and append a label entry for each case that has a closure reason."""
+    for case_id, closure in fetch_closures(list(case_numbers_by_id)).items():
+        if closure.get("closedReason"):
+            cmd_label(case_numbers_by_id[case_id], closure["closedReason"])
 
 
 # ---- graph ----
@@ -188,26 +216,27 @@ def summarise(rule, cases):
             "case": c["number"], "analyst": c["analyst"], "labelFrom": c.get("source"),
             "analystNote": c.get("note"), "closedReason": c["reason"], "sharedEntities": c["shared"],
         }.items() if v is not None} for c in examples],
-        "unlabelledCases": sorted(c["number"] for c in cases if c["analyst"] is None)[:10],
     }
 
 
 # ---- commands ----
 
 def cmd_record(data):
-    for key in ("caseNumber", "model", "verdict"):
+    for key in ("caseNumber", "caseId", "model", "verdict"):
         if key not in data:
             sys.exit(f"record needs {key}")
+    data.pop("closedReason", None)  # closures come from fetch_closures only
+    data["caseNumber"] = str(data["caseNumber"])
     append({"type": "verdict", "ranAt": now(), **data})
-    if data.get("closedReason"):
-        cmd_label(str(data["caseNumber"]), data["closedReason"])
     print(f"recorded case {data['caseNumber']} in {STORE}")
+    save_closures({data["caseId"]: data["caseNumber"]})
 
 
 def cmd_label(case, reason):
     label = label_from_reason(reason)
     append({"type": "label", "at": now(), "caseNumber": case, "reason": reason, "label": label})
-    print(f"case {case}: closedReason {reason!r} -> {label or 'unlabelled (ambiguous or unknown reason)'}")
+    print(f"case {case}: closedReason {reason!r} -> {label or 'unlabelled (ambiguous or unknown reason)'}",
+          file=sys.stderr)
 
 
 def cmd_feedback(case, label, note, analyst):
@@ -227,8 +256,13 @@ def cmd_feedback(case, label, note, analyst):
 
 
 def cmd_context(data):
-    verdicts, outcomes = load()
     current = str(data["caseNumber"])
+    verdicts, outcomes = load()
+    # Earlier cases that were open when scored may have closed since. Never the current case.
+    pending = {v["caseId"]: c for (c, _), v in verdicts.items()
+               if c != current and c not in outcomes and v.get("caseId")}
+    save_closures(dict(list(pending.items())[:REFRESH_PER_CONTEXT]))
+    verdicts, outcomes = load()
     from neo4j.exceptions import Neo4jError, ServiceUnavailable
     try:
         with driver() as d, d.session() as s:
@@ -245,15 +279,13 @@ def cmd_context(data):
 
 
 def main(argv):
-    if not argv or argv[0] not in ("record", "label", "feedback", "context"):
+    if not argv or argv[0] not in ("record", "feedback", "context"):
         sys.exit(__doc__)
     arg = lambda flag, default=None: argv[argv.index(flag) + 1] if flag in argv else default  # noqa: E731
     if argv[0] == "feedback":
         if not arg("--case") or not arg("--label"):
             sys.exit("feedback needs --case and --label")
         cmd_feedback(arg("--case"), arg("--label"), arg("--note", ""), arg("--analyst", os.environ.get("USER")))
-    elif argv[0] == "label":
-        cmd_label(argv[argv.index("--case") + 1], argv[argv.index("--reason") + 1])
     elif argv[0] == "record":
         cmd_record(json.load(sys.stdin))
     else:

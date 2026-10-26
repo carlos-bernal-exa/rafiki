@@ -6,7 +6,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Checks for the deterministic parts: confidence, raw-log sampling, and the read-only bridge.
 
-Run:  uv run --with pytest pytest -q tests/
+Run:  uv run --with pytest --with neo4j pytest -q tests/
 """
 import ast
 import json
@@ -113,3 +113,62 @@ def test_analyst_feedback_outranks_closure_whatever_the_order(tmp_path, monkeypa
     assert outcomes["1"]["label"] == "FP" and outcomes["1"]["source"] == "analyst"
     assert outcomes["1"]["note"] == "backup job" and outcomes["1"]["reason"] == "Confirmed Threat"
     assert outcomes["2"] == {"label": "FP", "source": "closure", "reason": "False Positive"}
+
+
+# ---- the three fixes: verbatim prompt, labels stripped in the bridge, closures out of view ----
+
+def _bridge_functions():
+    """The bridge's pure helpers, without importing mcp/httpx."""
+    tree = ast.parse((ROOT / "connector" / "exabeam-mcp-bridge.py").read_text())
+    keep = [n for n in tree.body
+            if (isinstance(n, ast.FunctionDef) and n.name in ("strip_labels", "find_first", "unlabel_text"))
+            or (isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") in ("LABEL_FIELDS", "READ_TOOLS"))]
+    ns = {"json": json}
+    exec(compile(ast.Module(body=keep, type_ignores=[]), "bridge", "exec"), ns)
+    return ns
+
+
+def test_prompt_is_aiscoring_verbatim():
+    import pytest
+    source = ROOT.parent / "AIScoring" / "server" / "prompts" / "deep-investigation.md"
+    if not source.exists():
+        pytest.skip("AIScoring checkout not next to this repo")
+    assert (ROOT / "skills" / "score-case" / "reference" / "deep-investigation.md").read_bytes() == source.read_bytes()
+
+
+def test_bridge_strips_the_disposition_and_hides_notes():
+    b = _bridge_functions()
+    case = {"case_number": 5968, "Stage": "CLOSED", "closed_reason": "False Positive", "assignee": "x",
+            "case_close_supporting_reason": "benign", "rules": [{"name": "R", "status": "closed"}], "title": "t"}
+    out = json.loads(b["unlabel_text"](json.dumps(case)))
+    assert out == {"case_number": 5968, "rules": [{"name": "R"}], "title": "t"}
+    assert "withheld" in b["unlabel_text"]("Case 5968 closed as False Positive")  # fail closed
+    assert "exabeam_get_case_notes" not in b["READ_TOOLS"]
+    assert b["find_first"]({"data": [{"x": 1}, {"closed_reason": "Benign"}]}, ("closed_reason",)) == "Benign"
+
+
+def test_record_ignores_a_closure_from_the_model_and_refresh_skips_the_current_case(tmp_path, monkeypatch):
+    import history
+    monkeypatch.setattr(history, "HOME", tmp_path)
+    monkeypatch.setattr(history, "STORE", tmp_path / "verdicts.jsonl")
+    asked = []
+    monkeypatch.setattr(history, "fetch_closures", lambda ids: asked.append(list(ids)) or {
+        i: {"closedReason": "False Positive"} for i in ids})
+    history.cmd_record({"caseNumber": 1, "caseId": "id-1", "model": "m", "verdict": {"verdict": "INVESTIGATE"},
+                        "closedReason": "made up by the model"})
+    history.cmd_record({"caseNumber": 2, "caseId": "id-2", "model": "m", "verdict": {"verdict": "INVESTIGATE"}})
+    lines = [json.loads(x) for x in (tmp_path / "verdicts.jsonl").read_text().splitlines()]
+    assert all("closedReason" not in x for x in lines if x["type"] == "verdict")
+    assert asked == [["id-1"], ["id-2"]]
+    # Unlabel both, then look up history for case 2: only case 1's closure may be fetched.
+    (tmp_path / "verdicts.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines if x["type"] != "label"))
+    asked.clear()
+    from neo4j.exceptions import ServiceUnavailable
+
+    def no_graph():
+        raise ServiceUnavailable("stubbed")
+    monkeypatch.setattr(history, "driver", no_graph)
+    import pytest
+    with pytest.raises(SystemExit, match="rule history unavailable"):
+        history.cmd_context({"caseNumber": "2", "rules": ["R"]})
+    assert asked == [["id-1"]]
