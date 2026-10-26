@@ -55,18 +55,23 @@ disposition another way.
      "filter": "<event_filter>",
      "startTime": "<event_from_time_millis, as ISO-8601>",
      "endTime": "<event_to_time_millis, as ISO-8601>",
-     "fields": ["rawLogs", "message", "activity", "event_name", "outcome", "vendor", "product",
+     "fields": ["rawLogs", "activity", "event_name", "outcome", "vendor", "product",
                 "approxLogTime", "time"],
      "orderBy": ["approxLogTime DESC"],
      "limit": "<ceil(100 / number of picks), and never more than the lines left>"
    }}
    ```
 
-   Those are the fields AIScoring keeps. `rawLogs` is the original log line, and it is where the
+   Those are the fields AIScoring keeps, minus `message`, which some tenants reject with
+   `400 Invalid fields value, [message]`. `rawLogs` is the original log line, and it is where the
    finding fields (`indicators`, `riskState`, `detector` and the rest) live, so never drop it. For
    each row keep a timestamp (`approxLogTime` or `time`), a source (`vendor product`), and a
-   message: the `rawLogs` lines joined, else `message`, else `activity event_name outcome`. That
-   is `rawLogs`. Stop at 100 lines in total.
+   message: the `rawLogs` lines joined, else `activity event_name outcome`. That is `rawLogs`.
+   Stop at 100 lines in total.
+
+   Send at most 3 searches at a time. Larger batches have failed with
+   `unhandled errors in a TaskGroup`. On that error, retry the pick alone once before listing it
+   in `unavailable`.
 
    The plan's `sampling` notes are `rawLogSampling`. Context, not missing data.
 4. **`unavailable`.** A list of strings. Add each of the plan's `gaps`. If a search errors, add
