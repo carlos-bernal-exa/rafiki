@@ -109,10 +109,18 @@ Check the connection:
 uv run connector/exabeam-mcp-bridge.py --check
 ```
 
-Load the plugin for a session:
+Install it from this checkout. The repo is its own marketplace, and the install reads the
+plugin straight from this folder, so edits show up after a restart:
 
 ```bash
-claude --plugin-dir /Users/cbernal/code/aiscoring-plugin
+claude plugin marketplace add /path/to/aiscoring-plugin
+claude plugin install aiscoring@aiscoring
+```
+
+Or load it for one session only:
+
+```bash
+claude --plugin-dir /path/to/aiscoring-plugin
 ```
 
 Then ask it to "score case 5968".

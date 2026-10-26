@@ -1,0 +1,14 @@
+{
+  "name": "aiscoring",
+  "owner": {
+    "name": "Exabeam",
+    "url": "https://www.exabeam.com/"
+  },
+  "plugins": [
+    {
+      "name": "aiscoring",
+      "source": "./",
+      "description": "Read-only Exabeam New-Scale case scoring with rule history."
+    }
+  ]
+}
