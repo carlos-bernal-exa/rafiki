@@ -79,8 +79,12 @@ LABEL_FIELDS = frozenset({
     "stage", "casestage", "queue", "casequeue", "assignee", "assignedto",
     "closed_reason", "closurereason", "resolution", "case_close_supporting_reason", "closurecomment",
     "status", "case_status", "casestatus", "alertstatus", "alert_status",
+    # camelCase names the New-Scale API actually returns. alertdescription goes too: analysts
+    # edit it, and it has carried "False Positive: ..." text. The rule's own description stays
+    # available per detection in the timeline.
+    "closedreason", "supportingreason", "caseclosedtimestamp", "lastmodifiedby", "alertdescription",
 })
-CLOSURE_KEYS = ("closed_reason", "closureReason", "resolution")
+CLOSURE_KEYS = ("closed_reason", "closureReason", "closedReason", "resolution")
 
 
 def strip_labels(obj):

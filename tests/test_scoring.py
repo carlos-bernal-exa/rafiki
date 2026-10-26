@@ -147,6 +147,16 @@ def test_bridge_strips_the_disposition_and_hides_notes():
     assert b["find_first"]({"data": [{"x": 1}, {"closed_reason": "Benign"}]}, ("closed_reason",)) == "Benign"
 
 
+def test_bridge_strips_the_camelcase_disposition_this_tenant_returns():
+    b = _bridge_functions()
+    case = {"caseNumber": 6795, "closedReason": "False Positive", "supportingReason": "backup job",
+            "caseClosedTimestamp": "2026-10-26T15:17:06", "lastModifiedBy": "an.analyst",
+            "alertDescription": "False Positive: it was the backup job", "alertName": "t", "riskScore": 90,
+            "detections": [{"lastModifiedBy": "system", "name": "R"}]}
+    out = json.loads(b["unlabel_text"](json.dumps(case)))
+    assert out == {"caseNumber": 6795, "alertName": "t", "riskScore": 90, "detections": [{"name": "R"}]}
+
+
 def test_record_ignores_a_closure_from_the_model_and_refresh_skips_the_current_case(tmp_path, monkeypatch):
     import history
     monkeypatch.setattr(history, "HOME", tmp_path)
