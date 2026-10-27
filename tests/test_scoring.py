@@ -232,3 +232,35 @@ def test_bridge_retries_rate_limits_and_unwraps_task_group_errors():
     unheaded = httpx.HTTPStatusError("429", request=limited.request, response=httpx.Response(429))
     assert b["retry_delay"](ExceptionGroup("g", [unheaded]), 2) == 4
     assert b["retry_delay"](ExceptionGroup("g", [ValueError("no")]), 0) is None
+
+
+def _run_bridge(tmp_path, env_file):
+    import os
+    import shutil
+    import subprocess
+    import pytest
+    if not shutil.which("uv"):
+        pytest.skip("uv not installed")
+    (tmp_path / ".exabeam-mcp.env").write_text(env_file)
+    env = {**os.environ, "HOME": str(tmp_path)}
+    return subprocess.Popen(["uv", "run", "--quiet", str(ROOT / "connector" / "exabeam-mcp-bridge.py")],
+                            env=env, stdin=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+
+def test_bridge_says_why_it_exits_without_credentials(tmp_path):
+    proc = _run_bridge(tmp_path, "")
+    _, err = proc.communicate(timeout=60)
+    assert proc.returncode == 1 and "missing credentials" in err
+
+
+def test_bridge_logs_its_exit_when_the_client_goes_away_or_it_is_stopped(tmp_path):
+    import signal
+    creds = "EXABEAM_MCP_URL=https://example.invalid/mcp\nEXABEAM_API_KEY=k\nEXABEAM_API_SECRET=s\n"
+    closed = _run_bridge(tmp_path, creds)
+    _, err = closed.communicate(timeout=60)  # stdin closes: the client went away
+    assert closed.returncode == 0 and "starting" in err and "client closed the connection" in err
+    stopped = _run_bridge(tmp_path, creds)
+    stopped.stderr.readline()  # wait for "starting" so the handler is installed
+    stopped.send_signal(signal.SIGTERM)
+    _, err = stopped.communicate(timeout=60)
+    assert "received SIGTERM" in err

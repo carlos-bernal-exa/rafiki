@@ -30,6 +30,7 @@ import asyncio
 import json
 import os
 import re
+import signal
 import ssl
 import sys
 import time
@@ -276,17 +277,37 @@ async def _serve():
         await server.run(read, write, server.create_initialization_options())
 
 
+def log(message):
+    """stderr is the only channel Claude Code keeps for a stdio server, so say why we stop."""
+    sys.stderr.write(f"bridge[{os.getpid()}]: {message}\n")
+    sys.stderr.flush()
+
+
+def _stop_on(signum, _frame):
+    log(f"received {signal.Signals(signum).name}, exiting")
+    sys.exit(0)
+
+
 def main():
     if not (URL and KEY and SECRET):
-        sys.stderr.write(
-            "exabeam-mcp-bridge: missing credentials. Create ~/.exabeam-mcp.env with "
-            "EXABEAM_MCP_URL, EXABEAM_API_KEY, EXABEAM_API_SECRET.\n"
-        )
+        log("exiting: missing credentials. Create ~/.exabeam-mcp.env with "
+            "EXABEAM_MCP_URL, EXABEAM_API_KEY, EXABEAM_API_SECRET.")
         sys.exit(1)
     if "--closure" in sys.argv:
         asyncio.run(_closure(sys.argv[sys.argv.index("--closure") + 1:]))
-    else:
-        asyncio.run(_check() if "--check" in sys.argv else _serve())
+        return
+    if "--check" in sys.argv:
+        asyncio.run(_check())
+        return
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, _stop_on)
+    log(f"starting, connecting to {urlparse(URL).netloc}")
+    try:
+        asyncio.run(_serve())
+    except Exception as e:  # noqa: BLE001  the server must say why it died
+        log("exiting after an error: " + "; ".join(f"{type(x).__name__}: {x}" for x in leaf_errors(e)))
+        sys.exit(1)
+    log("the client closed the connection, exiting")
 
 
 if __name__ == "__main__":
