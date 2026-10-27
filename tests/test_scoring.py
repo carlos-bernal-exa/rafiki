@@ -122,7 +122,7 @@ def _bridge_functions():
     """The bridge's pure helpers, without importing mcp/httpx."""
     tree = ast.parse((ROOT / "connector" / "exabeam-mcp-bridge.py").read_text())
     keep = [n for n in tree.body
-            if (isinstance(n, ast.FunctionDef) and n.name in ("strip_labels", "find_first", "unlabel_text", "leaf_errors", "retry_delay"))
+            if (isinstance(n, ast.FunctionDef) and n.name in ("strip_labels", "find_first", "unlabel_text", "leaf_errors", "retry_delay", "error_text"))
             or (isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") in ("LABEL_FIELDS", "LABEL_PATTERN", "READ_TOOLS"))]
     ns = {"json": json, "re": re, "httpx": __import__("httpx")}
     exec(compile(ast.Module(body=keep, type_ignores=[]), "bridge", "exec"), ns)
@@ -275,3 +275,27 @@ def test_bridge_logs_its_exit_when_the_client_goes_away_or_it_is_stopped(tmp_pat
     stopped.send_signal(signal.SIGTERM)
     _, err = stopped.communicate(timeout=60)
     assert "received SIGTERM" in err
+
+
+def test_bridge_retries_dropped_sessions_but_not_refusals():
+    b = _bridge_functions()
+
+    class McpError(Exception):
+        pass
+
+    class BrokenResourceError(Exception):
+        pass
+
+    assert b["retry_delay"](ExceptionGroup("g", [BrokenResourceError()]), 1) == 2
+    assert b["retry_delay"](McpError("Session terminated"), 0) == 1
+    assert b["retry_delay"](McpError("Invalid params"), 0) is None
+    assert b["retry_delay"](PermissionError("403"), 0) is None
+
+
+def test_bridge_shows_the_exabeam_error_instead_of_withholding_it():
+    from types import SimpleNamespace as NS
+    b = _bridge_functions()
+    failed = NS(isError=True, content=[NS(text="404 case not found: 6785"), NS(text=None)])
+    assert b["error_text"](failed) == "Exabeam returned an error: 404 case not found: 6785"
+    assert b["error_text"](NS(isError=True, content=[NS(text="x" * 900)])).endswith("x" * 500)
+    assert b["error_text"](NS(isError=False, content=[NS(text="{}")])) is None

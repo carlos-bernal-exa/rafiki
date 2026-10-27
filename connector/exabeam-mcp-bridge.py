@@ -163,14 +163,27 @@ def leaf_errors(exc):
 
 
 def retry_delay(exc, attempt):
-    """Seconds to wait before retrying a 429 from Exabeam, or None when the error is not one."""
+    """Seconds to wait before retrying a call that Exabeam throttled or dropped, else None.
+    Every tool here is a read, so retrying is safe. Matching a dropped session by name keeps
+    anyio and mcp internals out of this module's imports."""
     for leaf in leaf_errors(exc):
         if isinstance(leaf, httpx.HTTPStatusError) and leaf.response.status_code == 429:
             try:
                 return min(float(leaf.response.headers["Retry-After"]), 30)
             except (KeyError, ValueError):
                 return min(2 ** attempt, 16)
+        if type(leaf).__name__ == "BrokenResourceError" or "Session terminated" in str(leaf):
+            return min(2 ** attempt, 16)
     return None
+
+
+def error_text(result):
+    """The message of a failed Exabeam call, or None. An error is not case data, so showing it
+    cannot leak a disposition, and withholding it left the model unable to say what went wrong."""
+    if not result.isError:
+        return None
+    text = " ".join(getattr(b, "text", None) or "" for b in result.content).strip()
+    return "Exabeam returned an error: " + text[:500]
 
 
 # Exabeam answers 429 when several calls arrive together, and each call here is its own
@@ -190,7 +203,7 @@ async def remote(op):
                     async with ClientSession(r, w) as session:
                         await session.initialize()
                         return await op(session)
-            except BaseExceptionGroup as e:
+            except (Exception, BaseExceptionGroup) as e:
                 delay = retry_delay(e, attempt)
                 if delay is None or attempt == RETRIES:
                     raise RuntimeError("; ".join(f"{type(x).__name__}: {x}" for x in leaf_errors(e))) from e
@@ -240,7 +253,10 @@ async def list_tools():
 async def call_tool(name, arguments):
     if name not in READ_TOOLS:
         raise ValueError(f"{name} is not available: aiscoring is read-only")
-    content = (await remote(lambda s: s.call_tool(name, arguments or {}))).content
+    result = await remote(lambda s: s.call_tool(name, arguments or {}))
+    if (failure := error_text(result)) is not None:
+        raise ValueError(canonicalize(failure)[0])
+    content = result.content
     return [_clean_block(b, name in LABELLED_TOOLS) for b in content]
 
 
