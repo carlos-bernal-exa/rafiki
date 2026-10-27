@@ -206,7 +206,7 @@ def test_bridge_drops_disposition_keys_it_has_never_seen():
     """The strip list is a denylist, so a tenant that names the field differently must not leak."""
     b = _bridge_functions()
     case = {"caseNumber": 1, "closureNote": "x", "caseClosedBy": "a", "resolutionCode": "b",
-            "dispositionText": "c", "markedFalsePositive": True, "false_positive_flag": 1,
+            "dispositionText": "c", "caseAssignmentTimestamp": "t", "queueName": "q", "caseStatusChangedAt": "t", "markedFalsePositive": True, "false_positive_flag": 1,
             "riskScore": 9, "detections": [{"name": "R", "mitre": ["T1053"]}]}
     out = json.loads(b["unlabel_text"](json.dumps(case)))
     assert out == {"caseNumber": 1, "riskScore": 9, "detections": [{"name": "R", "mitre": ["T1053"]}]}

@@ -86,8 +86,10 @@ LABEL_FIELDS = frozenset({
 })
 # Backstop for names the list above has not seen: a tenant or API version that calls the field
 # something else must lose it, not leak it. A key that merely looks like a disposition is dropped
-# too; losing an odd field costs less than showing the answer.
-LABEL_PATTERN = re.compile(r"clos(e|ed|ure|ing)|resolution|disposition|false_?positive", re.I)
+# too; losing an odd field costs less than showing the answer. assign, queue and status cover
+# the rest of the handling fields the skill promises to hide (an assignment timestamp still shows
+# the case was worked).
+LABEL_PATTERN = re.compile(r"clos(e|ed|ure|ing)|resolution|disposition|false_?positive|assign|queue|status", re.I)
 CLOSURE_KEYS = ("closed_reason", "closureReason", "closedReason", "resolution")
 
 
