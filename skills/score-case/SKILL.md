@@ -32,7 +32,16 @@ carries the analyst's answer, and a score that reads it measures nothing. Do not
 disposition another way.
 
 1. **Case.** `exabeam_get_case_details` with `{"arg0": {"caseId": "…"}}`. Given a case *number*,
-   resolve it with `exabeam_search_cases` first. Keep: case number, case ID, title, risk score and
+   resolve it first with `exabeam_search_cases`:
+
+   ```json
+   {"arg0": {"filter": "caseNumber:<n>", "fields": ["caseId", "caseNumber"], "limit": 2,
+             "orderBy": ["risk_score DESC"],
+             "startTime": "<ISO time well before the case>Z", "endTime": "<now>Z"}}
+   ```
+
+   All six keys are required, and the filter takes the number unquoted. `caseId` is a UUID,
+   never the case number. Keep: case number, case ID, title, risk score and
    band, created time, grouped-by entity, scope, timeframe, users, devices, rules triggered (name,
    severity, occurrence count), MITRE TTPs, use cases, tags. This is the payload's `summary`,
    `rules` and `mitre`.
@@ -42,47 +51,34 @@ disposition another way.
    `srcProduct`, `mitres`, `useCases`, `approxLogTime`, and a `searchQuery` with `eventFilter`,
    `eventFromTimeMillis` and `eventToTimeMillis`. This is `timeline`. If there are more than 50
    detections, reason over the 50 most recent and add the note in Step 2.
-3. **Raw logs.** Build `[{"rule": "<rule names, sorted, joined with ', '>"}, …]` with one entry per
-   detection that has a `searchQuery`, in timeline order, and run:
+3. **Raw logs.** Save each timeline page to a file (a large result is saved for you), then run:
 
    ```bash
-   echo '<that list>' | uv run "<skill dir>/scoring.py" plan
+   uv run "<skill dir>/scoring.py" plan <page file> [<page file> ...]
    ```
 
-   For each index in `pick`, call `exabeam_search_events` with:
+   It picks which detections to search, with AIScoring's sampling, and prints the `searches` to
+   run. Each has the exact `arg0` for `exabeam_search_events`: the filter, both bounds with the
+   zone the search needs, `orderBy`, the fields and the per-search `limit`. Send each `arg0`
+   as printed. Do not rebuild it, drop fields, or reorder the list. The search is picky: a
+   missing `endTime` is rejected, a time without `Z` fails with `could not be parsed`, and a
+   missing `orderBy` returns `500 Internal Application error`. The plan also prints `timeline`.
+   When its `note` is not null, add that note in Step 2.
 
-   ```json
-   {"arg0": {
-     "filter": "<searchQuery.eventFilter>",
-     "startTime": "<searchQuery.eventFromTimeMillis> + Z",
-     "endTime": "<searchQuery.eventToTimeMillis> + Z",
-     "fields": ["rawLogs", "activity", "event_name", "outcome", "vendor", "product",
-                "approxLogTime", "time"],
-     "orderBy": ["approxLogTime DESC"],
-     "limit": "<ceil(100 / number of picks), and never more than the lines left>"
-   }}
-   ```
+   Run every search in `searches`. Do not skip any to save context. Each result is saved to a
+   file when it is large, so parse it with `python3 -I` and keep only the rows you need. A
+   search you skip is a gap to list in `unavailable`, not a saving. Lower the `limit` only to
+   stay inside the 100-line total.
 
-   Despite their names, `eventFromTimeMillis` and `eventToTimeMillis` are ISO strings in UTC with
-   no zone, such as `2026-10-23T07:06:57.376`. Append `Z` and send them as they are. Without the
-   `Z` the search fails with `could not be parsed`. Send both bounds on every search, because a
-   missing `endTime` is rejected. Keep `orderBy`, because a search without it returns
-   `500 Internal Application error`.
-
-   Those are the fields AIScoring keeps, minus `message`, which some tenants reject with
+   The fields are the ones AIScoring keeps, minus `message`, which some tenants reject with
    `400 Invalid fields value, [message]`. `rawLogs` is the original log line, and it is where the
    finding fields (`indicators`, `riskState`, `detector` and the rest) live, so never drop it. For
    each row keep a timestamp (`approxLogTime` or `time`), a source (`vendor product`), and a
    message: the `rawLogs` lines joined, else `activity event_name outcome`. That is `rawLogs`.
    Stop at 100 lines in total.
 
-   Search every index in `pick`. Do not skip picks to save context. Each result is saved to a
-   file when it is large, so parse it with `python3 -I` and keep only the rows you need. A pick
-   you skip is a gap to list in `unavailable`, not a saving.
-
-   Send at most 3 searches at a time. Larger batches have failed with
-   `unhandled errors in a TaskGroup`. On that error, retry the pick alone once before listing it
-   in `unavailable`.
+   Send at most 3 searches at a time, since Exabeam throttles bursts. If a search errors, quote
+   the error, retry that search alone once, and only then list it in `unavailable`.
 
    The plan's `sampling` notes are `rawLogSampling`. Context, not missing data.
 4. **`unavailable`.** A list of strings. Add each of the plan's `gaps`. If a search errors, add

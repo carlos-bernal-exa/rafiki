@@ -16,7 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "skills" / "score-case"))
-from scoring import confidence, plan, stage_count, validate  # noqa: E402
+from scoring import confidence, plan, plan_timeline, stage_count, validate  # noqa: E402
 
 BASE = {"summary": "s", "reasoning": [], "recommendedActions": [], "whatWouldChangeMyMind": [],
         "devilsAdvocate": {"argument": "a", "rebuttal": "r"}}
@@ -299,3 +299,31 @@ def test_bridge_shows_the_exabeam_error_instead_of_withholding_it():
     assert b["error_text"](failed) == "Exabeam returned an error: 404 case not found: 6785"
     assert b["error_text"](NS(isError=True, content=[NS(text="x" * 900)])).endswith("x" * 500)
     assert b["error_text"](NS(isError=False, content=[NS(text="{}")])) is None
+
+
+def _detection(rule, n, filter_="id: \"a\"", start="2026-10-23T07:06:57.376", end="2026-10-23T07:08:57.376"):
+    dto = {"detectionId": f"d{n}", "approxLogTime": f"2026-10-23T07:{n:02d}:00",
+           "rules": [{"ruleName": r} for r in rule]}
+    if filter_:
+        dto["searchQuery"] = {"eventFilter": filter_, "eventFromTimeMillis": start, "eventToTimeMillis": end}
+    return {"type": "detection", "alertCaseDetectionDto": dto}
+
+
+def test_plan_timeline_builds_the_searches_so_the_model_copies_instead_of_converting():
+    page1 = {"threatTimelines": [_detection(["B", "A"], 1), _detection(["B", "A"], 2, filter_="")]}
+    page2 = {"threatTimelines": [_detection(["C"], 3, start="2026-10-23T07:00:00+00:00")]}
+    out = plan_timeline([page1, page2])
+    assert [s["detection"] for s in out["searches"]] == ["d1", "d3"]  # d2 has no search_query
+    first, second = (s["arg0"] for s in out["searches"])
+    assert first == {"filter": 'id: "a"', "startTime": "2026-10-23T07:06:57.376Z", "endTime": "2026-10-23T07:08:57.376Z",
+                     "fields": ["rawLogs", "activity", "event_name", "outcome", "vendor", "product", "approxLogTime", "time"],
+                     "orderBy": ["approxLogTime DESC"], "limit": 50}
+    assert second["startTime"] == "2026-10-23T07:00:00+00:00"  # a zone is left alone
+    assert out["timeline"] == {"detections": 3, "shown": 3, "note": None}
+
+
+def test_plan_timeline_keeps_the_newest_fifty_and_says_so():
+    page = {"threatTimelines": [_detection(["R"], n % 60, filter_="") for n in range(60)]}
+    out = plan_timeline([page])
+    assert out["timeline"]["shown"] == 50 and out["timeline"]["detections"] == 60
+    assert out["timeline"]["note"] == "The timeline holds the 50 most recent of 60 detections. Earlier detections exist but are not shown."

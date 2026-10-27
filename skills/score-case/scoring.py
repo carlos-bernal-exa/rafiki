@@ -7,6 +7,7 @@
 server/exabeam.ts planRawLogSearches). The model gathers evidence and writes the verdict;
 this script does the parts a model gets wrong by hand.
 
+  uv run scoring.py plan        PAGE.json ...       # timeline pages in, the searches to run out
   uv run scoring.py plan        < detections.json   # which detections to pull raw logs for
   uv run scoring.py confidence  [--unavailable N] < verdict.json
 
@@ -18,6 +19,7 @@ this script does the parts a model gets wrong by hand.
 """
 import json
 import math
+import re
 import sys
 
 # ---- raw-log sampling (planRawLogSearches) ----
@@ -59,6 +61,49 @@ def plan(detections):
                 if len(found) > len(chosen) else f'"{rule}" fired {len(found)} times; logs pulled for all of them')
     gaps = [f"raw logs: {skipped} of {len(by_rule)} rules had no logs pulled, the search limit was reached"] if skipped else []
     return {"pick": sorted(pick), "sampling": sampling, "gaps": gaps}
+
+
+# ---- the searches themselves, built from the timeline pages ----
+
+RAW_LOG_LIMIT = 100
+TIMELINE_CAP = 50
+SEARCH_FIELDS = ["rawLogs", "activity", "event_name", "outcome", "vendor", "product", "approxLogTime", "time"]
+
+
+def utc(stamp):
+    """The timeline sends zoneless ISO strings under *Millis names. The search needs a zone."""
+    return stamp if re.search(r"(Z|[+-]\d\d:?\d\d)$", stamp) else stamp + "Z"
+
+
+def detections_in(page):
+    if isinstance(page, dict):
+        if "alertCaseDetectionDto" in page:
+            return [page["alertCaseDetectionDto"]]
+        return [d for v in page.values() for d in detections_in(v)]
+    if isinstance(page, list):
+        return [d for v in page for d in detections_in(v)]
+    return []
+
+
+def plan_timeline(pages):
+    """plan(), fed from the raw timeline pages, returning the exact exabeam_search_events
+    arguments so the model copies them instead of converting names and times by hand."""
+    found = [d for page in pages for d in detections_in(page)]
+    total = len(found)
+    recent = sorted(found, key=lambda d: str(d.get("approxLogTime") or ""))[-TIMELINE_CAP:]
+    searchable = [d for d in recent if (d.get("searchQuery") or {}).get("eventFilter")]
+    rule = lambda d: ", ".join(sorted(r.get("ruleName") or r.get("ruleReason") or "" for r in d.get("rules") or []))  # noqa: E731
+    out = plan([{"rule": rule(d)} for d in searchable])
+    per_search = math.ceil(RAW_LOG_LIMIT / max(1, len(out["pick"])))
+    searches = []
+    for i in out["pick"]:
+        q = searchable[i]["searchQuery"]
+        searches.append({"detection": searchable[i].get("detectionId"), "arg0": {
+            "filter": q["eventFilter"], "startTime": utc(q["eventFromTimeMillis"]), "endTime": utc(q["eventToTimeMillis"]),
+            "fields": SEARCH_FIELDS, "orderBy": ["approxLogTime DESC"], "limit": per_search}})
+    note = (f"The timeline holds the {TIMELINE_CAP} most recent of {total} detections. Earlier detections exist but are not shown."
+            if total > TIMELINE_CAP else None)
+    return {**out, "searches": searches, "timeline": {"detections": total, "shown": len(recent), "note": note}}
 
 
 # ---- confidence (computeConfidence) ----
@@ -186,6 +231,9 @@ def confidence(v, unavailable=0):
 def main(argv):
     if not argv or argv[0] not in ("plan", "confidence"):
         sys.exit(__doc__)
+    if argv[0] == "plan" and argv[1:]:
+        print(json.dumps(plan_timeline([json.load(open(f)) for f in argv[1:]]), indent=2))
+        return
     data = json.load(sys.stdin)
     if argv[0] == "plan":
         print(json.dumps(plan(data), indent=2))
