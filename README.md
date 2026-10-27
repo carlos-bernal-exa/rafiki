@@ -117,35 +117,37 @@ NEO4J_AUTH=neo4j/<same password> docker compose up -d
 
 ## Install
 
-Credentials live in `~/.exabeam-mcp.env`, the same file socxen uses:
-
-```
-EXABEAM_MCP_URL=https://api.<region>.exabeam.cloud/mcp
-EXABEAM_API_KEY=...
-EXABEAM_API_SECRET=...
-```
-
-Check the connection:
+You need Claude Code, [uv](https://docs.astral.sh/uv/) and an Exabeam New-Scale API key and secret.
 
 ```bash
-uv run connector/exabeam-mcp-bridge.py --check
+git clone <repo-url> aiscoring-plugin && cd aiscoring-plugin
+./install.sh
 ```
 
-Install it from this checkout. The repo is its own marketplace, and the install reads the
-plugin straight from this folder, so edits show up after a restart:
+The script asks for your MCP URL, key and secret and saves them to `~/.exabeam-mcp.env` (mode
+600). It checks the connection, then installs the plugin. Restart Claude Code and ask it to
+"score case 5968".
 
-```bash
-claude plugin marketplace add /path/to/aiscoring-plugin
-claude plugin install aiscoring@aiscoring
-```
+Rule history needs Neo4j in Docker. Add `--with-history` and the script generates a password,
+saves it to `~/.aiscoring/neo4j.env` and starts the container. Scoring works without it.
 
-Or load it for one session only:
+`./install.sh --check` tests an existing install and changes nothing. To try the plugin for one
+session without installing, run `claude --plugin-dir /path/to/aiscoring-plugin`.
 
-```bash
-claude --plugin-dir /path/to/aiscoring-plugin
-```
+## Guardrails
 
-Then ask it to "score case 5968".
+- **Read-only.** The bridge exposes 15 read tools. Anything else is hidden from the tool list and
+  refused if called.
+- **Blind scoring.** The bridge removes the analyst's disposition from case and alert results,
+  using a list of known field names plus a pattern that catches names it has not seen (anything
+  with "close", "closure", "resolution", "disposition" or "false positive" in the key). Free text
+  is not scanned, so a note typed into a description can still reach the model. A result that is
+  not JSON is withheld.
+- **Local data.** `~/.aiscoring/verdicts.jsonl` holds case numbers, rule names and user and host
+  names from your tenant. The directory is created with mode 700 and the file with mode 600.
+  Nothing leaves your machine except the Exabeam calls and the model session itself.
+- **Untrusted logs.** The skill tells the model to treat text inside logs as evidence, never as an
+  instruction.
 
 ## Tests
 
