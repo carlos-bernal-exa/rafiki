@@ -10,6 +10,7 @@ Run:  uv run --with pytest --with neo4j pytest -q tests/
 """
 import ast
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -122,8 +123,8 @@ def _bridge_functions():
     tree = ast.parse((ROOT / "connector" / "exabeam-mcp-bridge.py").read_text())
     keep = [n for n in tree.body
             if (isinstance(n, ast.FunctionDef) and n.name in ("strip_labels", "find_first", "unlabel_text"))
-            or (isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") in ("LABEL_FIELDS", "READ_TOOLS"))]
-    ns = {"json": json}
+            or (isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") in ("LABEL_FIELDS", "LABEL_PATTERN", "READ_TOOLS"))]
+    ns = {"json": json, "re": re}
     exec(compile(ast.Module(body=keep, type_ignores=[]), "bridge", "exec"), ns)
     return ns
 
@@ -199,3 +200,22 @@ def test_closure_refresh_reaches_every_open_case_and_missing_auth_reads_as_unava
             history.cmd_context({"caseNumber": "15", "rules": ["R"]})
     assert all(len(batch) == history.REFRESH_PER_CONTEXT and "id-15" not in batch for batch in asked)
     assert {i for batch in asked for i in batch} == {f"id-{n}" for n in range(1, 15)}
+
+
+def test_bridge_drops_disposition_keys_it_has_never_seen():
+    """The strip list is a denylist, so a tenant that names the field differently must not leak."""
+    b = _bridge_functions()
+    case = {"caseNumber": 1, "closureNote": "x", "caseClosedBy": "a", "resolutionCode": "b",
+            "dispositionText": "c", "markedFalsePositive": True, "false_positive_flag": 1,
+            "riskScore": 9, "detections": [{"name": "R", "mitre": ["T1053"]}]}
+    out = json.loads(b["unlabel_text"](json.dumps(case)))
+    assert out == {"caseNumber": 1, "riskScore": 9, "detections": [{"name": "R", "mitre": ["T1053"]}]}
+
+
+def test_history_store_is_private(tmp_path, monkeypatch):
+    import history
+    monkeypatch.setattr(history, "HOME", tmp_path / "h")
+    monkeypatch.setattr(history, "STORE", tmp_path / "h" / "verdicts.jsonl")
+    history.append({"type": "feedback", "caseNumber": "1", "label": "FP", "note": "n"})
+    assert (tmp_path / "h").stat().st_mode & 0o077 == 0
+    assert (tmp_path / "h" / "verdicts.jsonl").stat().st_mode & 0o077 == 0

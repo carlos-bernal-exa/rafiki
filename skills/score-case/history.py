@@ -66,8 +66,9 @@ def label_from_reason(reason):
 # ---- store ----
 
 def append(entry):
-    HOME.mkdir(parents=True, exist_ok=True)
-    with STORE.open("a") as f:
+    # The store holds case numbers, rule names and user/host names from a live tenant.
+    HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with os.fdopen(os.open(STORE, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600), "a") as f:
         f.write(json.dumps(entry) + "\n")
 
 

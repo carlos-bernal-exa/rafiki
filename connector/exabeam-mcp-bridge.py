@@ -84,12 +84,16 @@ LABEL_FIELDS = frozenset({
     # available per detection in the timeline.
     "closedreason", "supportingreason", "caseclosedtimestamp", "lastmodifiedby", "alertdescription",
 })
+# Backstop for names the list above has not seen: a tenant or API version that calls the field
+# something else must lose it, not leak it. A key that merely looks like a disposition is dropped
+# too; losing an odd field costs less than showing the answer.
+LABEL_PATTERN = re.compile(r"clos(e|ed|ure|ing)|resolution|disposition|false_?positive", re.I)
 CLOSURE_KEYS = ("closed_reason", "closureReason", "closedReason", "resolution")
 
 
 def strip_labels(obj):
     if isinstance(obj, dict):
-        return {k: strip_labels(v) for k, v in obj.items() if k.lower() not in LABEL_FIELDS}
+        return {k: strip_labels(v) for k, v in obj.items() if k.lower() not in LABEL_FIELDS and not LABEL_PATTERN.search(k)}
     if isinstance(obj, list):
         return [strip_labels(v) for v in obj]
     return obj
