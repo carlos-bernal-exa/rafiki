@@ -51,7 +51,10 @@ disposition another way.
    `srcProduct`, `mitres`, `useCases`, `approxLogTime`, and a `searchQuery` with `eventFilter`,
    `eventFromTimeMillis` and `eventToTimeMillis`. This is `timeline`. If there are more than 50
    detections, reason over the 50 most recent and add the note in Step 2.
-3. **Raw logs.** Save each timeline page to a file (a large result is saved for you), then run:
+3. **Raw logs.** A large timeline page is saved to a file for you. A small one comes back
+   inline. Don't retype it whole. Write each of its detections to a JSON list file with only
+   `detectionId`, `approxLogTime`, `rules` (the rule names) and `searchQuery` (all three keys,
+   values as received). Then run:
 
    ```bash
    uv run "<skill dir>/scoring.py" plan <page file> [<page file> ...]

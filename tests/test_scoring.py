@@ -329,3 +329,14 @@ def test_plan_timeline_searches_the_whole_timeline_but_only_the_newest_fifty_are
     assert out["timeline"]["shown"] == 50 and out["timeline"]["detections"] == 70
     assert out["timeline"]["note"] == "The timeline holds the 50 most recent of 70 detections. Earlier detections exist but are not shown."
     assert {s["detection"] for s in out["searches"]} & {f"d{n}" for n in range(10)}  # the earliest detections get logs too
+
+
+def test_plan_timeline_takes_a_trimmed_page_for_a_result_that_came_back_inline():
+    saved = {"threatTimelines": [_detection(["A"], 1)]}
+    trimmed = [{"detectionId": "d2", "approxLogTime": "2026-10-23T07:02:00", "rules": ["A"],
+                "searchQuery": {"eventFilter": 'id: "b"', "eventFromTimeMillis": "2026-10-23T07:01:00",
+                                "eventToTimeMillis": "2026-10-23T07:03:00"}}]
+    out = plan_timeline([saved, trimmed])
+    assert [s["detection"] for s in out["searches"]] == ["d1", "d2"]
+    assert out["searches"][1]["arg0"]["endTime"] == "2026-10-23T07:03:00Z"
+    assert out["sampling"] == ['"A" fired 2 times; logs pulled for all of them']

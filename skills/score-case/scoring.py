@@ -79,6 +79,8 @@ def detections_in(page):
     if isinstance(page, dict):
         if "alertCaseDetectionDto" in page:
             return [page["alertCaseDetectionDto"]]
+        if "searchQuery" in page or "detectionId" in page:  # a trimmed detection, for a page that came back inline
+            return [page]
         return [d for v in page.values() for d in detections_in(v)]
     if isinstance(page, list):
         return [d for v in page for d in detections_in(v)]
@@ -93,7 +95,8 @@ def plan_timeline(pages):
     # AIScoring searches the whole case timeline for raw logs and only trims what the model reads.
     ordered = sorted(found, key=lambda d: str(d.get("approxLogTime") or ""))
     searchable = [d for d in ordered if (d.get("searchQuery") or {}).get("eventFilter")]
-    rule = lambda d: ", ".join(sorted(r.get("ruleName") or r.get("ruleReason") or "" for r in d.get("rules") or []))  # noqa: E731
+    name = lambda r: r if isinstance(r, str) else r.get("ruleName") or r.get("ruleReason") or ""  # noqa: E731
+    rule = lambda d: ", ".join(sorted(name(r) for r in d.get("rules") or []))  # noqa: E731
     out = plan([{"rule": rule(d)} for d in searchable])
     per_search = math.ceil(RAW_LOG_LIMIT / max(1, len(out["pick"])))
     searches = []
