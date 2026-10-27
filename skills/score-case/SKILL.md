@@ -69,6 +69,10 @@ disposition another way.
    message: the `rawLogs` lines joined, else `activity event_name outcome`. That is `rawLogs`.
    Stop at 100 lines in total.
 
+   Search every index in `pick`. Do not skip picks to save context. Each result is saved to a
+   file when it is large, so parse it with `python3 -I` and keep only the rows you need. A pick
+   you skip is a gap to list in `unavailable`, not a saving.
+
    Send at most 3 searches at a time. Larger batches have failed with
    `unhandled errors in a TaskGroup`. On that error, retry the pick alone once before listing it
    in `unavailable`.
@@ -140,7 +144,10 @@ and carry on; do not add it to `unavailable`.
 
 ## Step 3: write the verdict and compute confidence
 
-Write the verdict as JSON to a file, in the shape the prompt asks for:
+Write the verdict as JSON to a file, in the shape the prompt asks for. Windows paths hold
+backslashes, and JSON needs each one doubled (`C:\\Windows\\System32`). Escape them, or build the file
+with `json.dump` from Python. Never swap them for forward slashes, because the verdict is
+evidence and the path is part of it.
 
 ```json
 {
