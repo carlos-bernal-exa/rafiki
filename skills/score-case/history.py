@@ -122,7 +122,9 @@ def save_closures(case_numbers_by_id):
     """Fetch closures and append a label entry for each case that has a closure reason."""
     for case_id, closure in fetch_closures(list(case_numbers_by_id)).items():
         if closure.get("closedReason"):
-            cmd_label(case_numbers_by_id[case_id], closure["closedReason"])
+            # quiet: this runs inside the model's session, and the case just scored must not show
+            # its own outcome. Earlier cases reach the model through `context`, as counts.
+            cmd_label(case_numbers_by_id[case_id], closure["closedReason"], quiet=True)
 
 
 # ---- graph ----
@@ -236,11 +238,12 @@ def cmd_record(data):
     save_closures({data["caseId"]: data["caseNumber"]})
 
 
-def cmd_label(case, reason):
+def cmd_label(case, reason, quiet=False):
     label = label_from_reason(reason)
     append({"type": "label", "at": now(), "caseNumber": case, "reason": reason, "label": label})
-    print(f"case {case}: closedReason {reason!r} -> {label or 'unlabelled (ambiguous or unknown reason)'}",
-          file=sys.stderr)
+    if not quiet:
+        print(f"case {case}: closedReason {reason!r} -> {label or 'unlabelled (ambiguous or unknown reason)'}",
+              file=sys.stderr)
 
 
 def cmd_feedback(case, label, note, analyst):

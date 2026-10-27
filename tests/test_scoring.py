@@ -158,6 +158,17 @@ def test_bridge_strips_the_camelcase_disposition_this_tenant_returns():
     assert out == {"caseNumber": 6795, "alertName": "t", "riskScore": 90, "detections": [{"name": "R"}]}
 
 
+def test_record_does_not_print_the_closure_it_just_fetched(tmp_path, monkeypatch, capsys):
+    import history
+    monkeypatch.setattr(history, "HOME", tmp_path)
+    monkeypatch.setattr(history, "STORE", tmp_path / "verdicts.jsonl")
+    monkeypatch.setattr(history, "fetch_closures", lambda ids: {i: {"closedReason": "False Positive"} for i in ids})
+    history.cmd_record({"caseNumber": 7, "caseId": "id-7", "model": "m", "verdict": {"verdict": "INVESTIGATE"}})
+    seen = capsys.readouterr()
+    assert "False Positive" not in seen.out + seen.err
+    assert '"label": "FP"' in (tmp_path / "verdicts.jsonl").read_text()  # still saved, just not shown
+
+
 def test_record_ignores_a_closure_from_the_model_and_refresh_skips_the_current_case(tmp_path, monkeypatch):
     import history
     monkeypatch.setattr(history, "HOME", tmp_path)
