@@ -178,14 +178,17 @@ uv run "<skill dir>/scoring.py" confidence --unavailable <len(unavailable)> < ve
 It validates the verdict and prints the computed confidence with its factors. If validation
 fails, fix the JSON and rerun. Report the computed value. Yours appears as `selfReported`.
 
-Record the score so later cases can use it:
+Record the score so later cases can use it. Write the JSON to a file and pipe it in, because a
+case title with an apostrophe breaks an `echo '...'`:
 
 ```bash
-echo '{"caseNumber": "<n>", "caseId": "<id>", "title": "<title>", "model": "<your model id>",
-       "rules": [{"name": "…", "severity": "…", "occurrences": 3}],
-       "users": […], "devices": […],
-       "verdict": <the verdict JSON>, "confidence": <computed value>}' \
-  | uv run "<skill dir>/history.py" record
+cat > record.json <<'JSON'
+{"caseNumber": "<n>", "caseId": "<id>", "title": "<title>", "model": "<your model id>",
+ "rules": [{"name": "…", "severity": "…", "occurrences": 3}],
+ "users": […], "devices": […],
+ "verdict": <the verdict JSON>, "confidence": <computed value>}
+JSON
+uv run "<skill dir>/history.py" record < record.json
 ```
 
 `record` fetches the case's Exabeam closure reason itself, after the score is saved. You never

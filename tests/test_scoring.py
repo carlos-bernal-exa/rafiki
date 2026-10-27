@@ -322,8 +322,10 @@ def test_plan_timeline_builds_the_searches_so_the_model_copies_instead_of_conver
     assert out["timeline"] == {"detections": 3, "shown": 3, "note": None}
 
 
-def test_plan_timeline_keeps_the_newest_fifty_and_says_so():
-    page = {"threatTimelines": [_detection(["R"], n % 60, filter_="") for n in range(60)]}
-    out = plan_timeline([page])
-    assert out["timeline"]["shown"] == 50 and out["timeline"]["detections"] == 60
-    assert out["timeline"]["note"] == "The timeline holds the 50 most recent of 60 detections. Earlier detections exist but are not shown."
+def test_plan_timeline_searches_the_whole_timeline_but_only_the_newest_fifty_are_read():
+    early = [_detection(["Early"], n) for n in range(10)]
+    late = [_detection(["Late"], 10 + n % 50, filter_=f'id: "l{n}"') for n in range(60)]
+    out = plan_timeline([{"threatTimelines": early + late}])
+    assert out["timeline"]["shown"] == 50 and out["timeline"]["detections"] == 70
+    assert out["timeline"]["note"] == "The timeline holds the 50 most recent of 70 detections. Earlier detections exist but are not shown."
+    assert {s["detection"] for s in out["searches"]} & {f"d{n}" for n in range(10)}  # the earliest detections get logs too

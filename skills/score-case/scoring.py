@@ -90,8 +90,9 @@ def plan_timeline(pages):
     arguments so the model copies them instead of converting names and times by hand."""
     found = [d for page in pages for d in detections_in(page)]
     total = len(found)
-    recent = sorted(found, key=lambda d: str(d.get("approxLogTime") or ""))[-TIMELINE_CAP:]
-    searchable = [d for d in recent if (d.get("searchQuery") or {}).get("eventFilter")]
+    # AIScoring searches the whole case timeline for raw logs and only trims what the model reads.
+    ordered = sorted(found, key=lambda d: str(d.get("approxLogTime") or ""))
+    searchable = [d for d in ordered if (d.get("searchQuery") or {}).get("eventFilter")]
     rule = lambda d: ", ".join(sorted(r.get("ruleName") or r.get("ruleReason") or "" for r in d.get("rules") or []))  # noqa: E731
     out = plan([{"rule": rule(d)} for d in searchable])
     per_search = math.ceil(RAW_LOG_LIMIT / max(1, len(out["pick"])))
@@ -103,7 +104,7 @@ def plan_timeline(pages):
             "fields": SEARCH_FIELDS, "orderBy": ["approxLogTime DESC"], "limit": per_search}})
     note = (f"The timeline holds the {TIMELINE_CAP} most recent of {total} detections. Earlier detections exist but are not shown."
             if total > TIMELINE_CAP else None)
-    return {**out, "searches": searches, "timeline": {"detections": total, "shown": len(recent), "note": note}}
+    return {**out, "searches": searches, "timeline": {"detections": total, "shown": min(total, TIMELINE_CAP), "note": note}}
 
 
 # ---- confidence (computeConfidence) ----
