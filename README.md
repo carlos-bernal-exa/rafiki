@@ -128,6 +128,13 @@ The script asks for your MCP URL, key and secret and saves them to `~/.exabeam-m
 600). It checks the connection, then installs the plugin. Restart Claude Code and ask it to
 "score case 5968".
 
+Once the repo is published, Claude Code 2.1.275 or later installs it in one line, though you
+still need the credentials file from `./install.sh`:
+
+```
+/plugin install aiscoring --marketplace <org>/<repo>
+```
+
 Rule history needs Neo4j in Docker. Add `--with-history` and the script generates a password,
 saves it to `~/.aiscoring/neo4j.env` and starts the container. Scoring works without it.
 

@@ -7,6 +7,24 @@
     "url": "https://www.exabeam.com/"
   },
   "license": "Apache-2.0",
-  "keywords": ["soc", "alert-triage", "case-scoring", "exabeam", "mcp", "claude-code"],
-  "skills": "./skills/"
+  "keywords": [
+    "soc",
+    "alert-triage",
+    "case-scoring",
+    "exabeam",
+    "mcp",
+    "claude-code"
+  ],
+  "skills": "./skills/",
+  "mcpServers": {
+    "exabeam": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "--quiet",
+        "${CLAUDE_PLUGIN_ROOT}/connector/exabeam-mcp-bridge.py"
+      ]
+    }
+  }
 }

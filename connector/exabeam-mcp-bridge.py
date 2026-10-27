@@ -152,13 +152,47 @@ async def get_token():
     return _token["value"]
 
 
+def leaf_errors(exc):
+    """The real errors inside the ExceptionGroups that anyio's task groups wrap them in."""
+    if isinstance(exc, BaseExceptionGroup):
+        return [leaf for sub in exc.exceptions for leaf in leaf_errors(sub)]
+    return [exc]
+
+
+def retry_delay(exc, attempt):
+    """Seconds to wait before retrying a 429 from Exabeam, or None when the error is not one."""
+    for leaf in leaf_errors(exc):
+        if isinstance(leaf, httpx.HTTPStatusError) and leaf.response.status_code == 429:
+            try:
+                return min(float(leaf.response.headers["Retry-After"]), 30)
+            except (KeyError, ValueError):
+                return min(2 ** attempt, 16)
+    return None
+
+
+# Exabeam answers 429 when several calls arrive together, and each call here is its own
+# connection. Two at a time stays under it; the rest queue.
+_slots = asyncio.Semaphore(2)
+RETRIES = 4
+
+
 async def remote(op):
-    """Open a fresh authenticated connection to the remote Exabeam MCP and run op(session)."""
-    tok = await get_token()
-    async with streamablehttp_client(URL, headers={"Authorization": f"Bearer {tok}"}) as (r, w, _):
-        async with ClientSession(r, w) as session:
-            await session.initialize()
-            return await op(session)
+    """Open a fresh authenticated connection to the remote Exabeam MCP and run op(session).
+    Retries rate limiting, and reports the underlying error instead of a TaskGroup wrapper."""
+    async with _slots:
+        for attempt in range(RETRIES + 1):
+            tok = await get_token()
+            try:
+                async with streamablehttp_client(URL, headers={"Authorization": f"Bearer {tok}"}) as (r, w, _):
+                    async with ClientSession(r, w) as session:
+                        await session.initialize()
+                        return await op(session)
+            except BaseExceptionGroup as e:
+                delay = retry_delay(e, attempt)
+                if delay is None or attempt == RETRIES:
+                    raise RuntimeError("; ".join(f"{type(x).__name__}: {x}" for x in leaf_errors(e))) from e
+                sys.stderr.write(f"bridge: Exabeam rate limited the call, retrying in {delay:.0f}s\n")
+                await asyncio.sleep(delay)
 
 
 server = Server("exabeam")

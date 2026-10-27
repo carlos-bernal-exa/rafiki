@@ -80,7 +80,7 @@ def test_bridge_is_read_only():
     tools = {e.value for e in node.value.args[0].elts}
     writes = {"exabeam_update_alert", "exabeam_update_case", "exabeam_create_case", "exabeam_create_case_notes"}
     assert tools and not tools & writes
-    assert json.loads((ROOT / ".mcp.json").read_text())["mcpServers"]["exabeam"]["args"][-1].endswith("exabeam-mcp-bridge.py")
+    assert json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())["mcpServers"]["exabeam"]["args"][-1].endswith("exabeam-mcp-bridge.py")
 
 
 from history import label_from_reason, summarise  # noqa: E402
@@ -122,9 +122,9 @@ def _bridge_functions():
     """The bridge's pure helpers, without importing mcp/httpx."""
     tree = ast.parse((ROOT / "connector" / "exabeam-mcp-bridge.py").read_text())
     keep = [n for n in tree.body
-            if (isinstance(n, ast.FunctionDef) and n.name in ("strip_labels", "find_first", "unlabel_text"))
+            if (isinstance(n, ast.FunctionDef) and n.name in ("strip_labels", "find_first", "unlabel_text", "leaf_errors", "retry_delay"))
             or (isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") in ("LABEL_FIELDS", "LABEL_PATTERN", "READ_TOOLS"))]
-    ns = {"json": json, "re": re}
+    ns = {"json": json, "re": re, "httpx": __import__("httpx")}
     exec(compile(ast.Module(body=keep, type_ignores=[]), "bridge", "exec"), ns)
     return ns
 
@@ -219,3 +219,16 @@ def test_history_store_is_private(tmp_path, monkeypatch):
     history.append({"type": "feedback", "caseNumber": "1", "label": "FP", "note": "n"})
     assert (tmp_path / "h").stat().st_mode & 0o077 == 0
     assert (tmp_path / "h" / "verdicts.jsonl").stat().st_mode & 0o077 == 0
+
+
+def test_bridge_retries_rate_limits_and_unwraps_task_group_errors():
+    import httpx
+    b = _bridge_functions()
+    limited = httpx.HTTPStatusError("429", request=httpx.Request("POST", "https://x"),
+                                    response=httpx.Response(429, headers={"Retry-After": "3"}))
+    nested = BaseExceptionGroup("g", [ExceptionGroup("inner", [limited])])
+    assert b["leaf_errors"](nested) == [limited]
+    assert b["retry_delay"](nested, 0) == 3
+    unheaded = httpx.HTTPStatusError("429", request=limited.request, response=httpx.Response(429))
+    assert b["retry_delay"](ExceptionGroup("g", [unheaded]), 2) == 4
+    assert b["retry_delay"](ExceptionGroup("g", [ValueError("no")]), 0) is None
