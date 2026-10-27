@@ -36,13 +36,14 @@ disposition another way.
    band, created time, grouped-by entity, scope, timeframe, users, devices, rules triggered (name,
    severity, occurrence count), MITRE TTPs, use cases, tags. This is the payload's `summary`,
    `rules` and `mitre`.
-2. **Timeline.** `exabeam_get_case_threat_timeline`, every page. Each detection gives a timestamp,
-   rules, entities (`src_host`, `dest_host`, `user`), source and destination IP, name, description,
-   priority, risk score, vendor, product, MITRE, use cases, and a `search_query`
-   (`event_filter`, `event_from_time_millis`, `event_to_time_millis`). This is `timeline`. If there
-   are more than 50 detections, reason over the 50 most recent and add the note in Step 2.
+2. **Timeline.** `exabeam_get_case_threat_timeline`, every page. Each item holds the detection
+   under `alertCaseDetectionDto`, with `name`, `description`, `priority`, `riskScore`, `rules`,
+   `srcHost`, `destHost`, `srcIp`, `destIp`, `user`, `vendor`, `product`, `srcVendor`,
+   `srcProduct`, `mitres`, `useCases`, `approxLogTime`, and a `searchQuery` with `eventFilter`,
+   `eventFromTimeMillis` and `eventToTimeMillis`. This is `timeline`. If there are more than 50
+   detections, reason over the 50 most recent and add the note in Step 2.
 3. **Raw logs.** Build `[{"rule": "<rule names, sorted, joined with ', '>"}, …]` with one entry per
-   detection that has a `search_query`, in timeline order, and run:
+   detection that has a `searchQuery`, in timeline order, and run:
 
    ```bash
    echo '<that list>' | uv run "<skill dir>/scoring.py" plan
@@ -52,15 +53,21 @@ disposition another way.
 
    ```json
    {"arg0": {
-     "filter": "<event_filter>",
-     "startTime": "<event_from_time_millis, as ISO-8601>",
-     "endTime": "<event_to_time_millis, as ISO-8601>",
+     "filter": "<searchQuery.eventFilter>",
+     "startTime": "<searchQuery.eventFromTimeMillis> + Z",
+     "endTime": "<searchQuery.eventToTimeMillis> + Z",
      "fields": ["rawLogs", "activity", "event_name", "outcome", "vendor", "product",
                 "approxLogTime", "time"],
      "orderBy": ["approxLogTime DESC"],
      "limit": "<ceil(100 / number of picks), and never more than the lines left>"
    }}
    ```
+
+   Despite their names, `eventFromTimeMillis` and `eventToTimeMillis` are ISO strings in UTC with
+   no zone, such as `2026-10-23T07:06:57.376`. Append `Z` and send them as they are. Without the
+   `Z` the search fails with `could not be parsed`. Send both bounds on every search, because a
+   missing `endTime` is rejected. Keep `orderBy`, because a search without it returns
+   `500 Internal Application error`.
 
    Those are the fields AIScoring keeps, minus `message`, which some tenants reject with
    `400 Invalid fields value, [message]`. `rawLogs` is the original log line, and it is where the
