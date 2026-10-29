@@ -191,6 +191,8 @@ these out:
 - Detections the plan didn't search. That is `rawLogSampling`.
 - A source that failed to load. It is already in `unavailable`, and counting it twice costs
   twice.
+- An account the lookup found no record for. That is "no role on record", a fact about the
+  tenant, not something this case left open.
 
 Then:
 
