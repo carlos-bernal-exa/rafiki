@@ -32,11 +32,13 @@ Reads creds from ~/.exabeam-mcp.env (same file socxen uses):
 import asyncio
 import json
 import os
+import random
 import re
 import signal
 import ssl
 import sys
 import time
+from datetime import timedelta
 from urllib.parse import urlparse
 
 import certifi
@@ -45,6 +47,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
+from mcp.shared.exceptions import McpError
 
 from canonicalize import canonicalize
 
@@ -166,21 +169,6 @@ def leaf_errors(exc):
     return [exc]
 
 
-def retry_delay(exc, attempt):
-    """Seconds to wait before retrying a call that Exabeam throttled or dropped, else None.
-    Every tool here is a read, so retrying is safe. Matching a dropped session by name keeps
-    anyio and mcp internals out of this module's imports."""
-    for leaf in leaf_errors(exc):
-        if isinstance(leaf, httpx.HTTPStatusError) and leaf.response.status_code == 429:
-            try:
-                return min(float(leaf.response.headers["Retry-After"]), 30)
-            except (KeyError, ValueError):
-                return min(2 ** attempt, 16)
-        if type(leaf).__name__ == "BrokenResourceError" or "Session terminated" in str(leaf):
-            return min(2 ** attempt, 16)
-    return None
-
-
 def error_text(result):
     """The message of a failed Exabeam call, or None. An error is not case data, so showing it
     cannot leak a disposition, and withholding it left the model unable to say what went wrong."""
@@ -190,29 +178,218 @@ def error_text(result):
     return "Exabeam returned an error: " + text[:500]
 
 
-# Exabeam answers 429 when several calls arrive together, and each call here is its own
-# connection. Two at a time stays under it; the rest queue.
-_slots = asyncio.Semaphore(2)
-RETRIES = 4
+# ---- the upstream session, ported from socxen's bridge (socxen #153-#157) ----
+# One remote MCP session per bridge process, opened lazily and reopened when it is lost. The
+# old design opened a new session for every call, and Exabeam rate-limits session opens: 16
+# concurrent reads through it got a 403 and queued up to 71 s, where one shared session served
+# all 16 in about 9 s. Every tool here is a read, so every call may be retried.
+
+_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+_RETRY_DELAYS = (0.3, 0.9)               # seconds, plus jitter
+_CALL_TIMEOUT = timedelta(seconds=120)   # no call may hang the bridge forever
+_DROP_TIMEOUT = 10.0             # how long drop() waits for the owner task to send its DELETE and exit
+_OPEN_FAIL_WAIT = 5.0            # how long _open() waits for a failed owner task to finish unwinding
+_BREAKER_TRIP = 5                # consecutive transport failures ...
+_BREAKER_HOLD = 20.0             # ... open the breaker for this long
+
+
+class _Leaf:
+    """What actually failed, dug out of the ExceptionGroup that anyio wraps around everything
+    raised inside a session, and whether a retry or a new session can help."""
+
+    def __init__(self, exc):
+        def rank(e):                     # the most informative leaf wins
+            if isinstance(e, httpx.HTTPStatusError):
+                return 0
+            if isinstance(e, McpError):
+                return 1
+            if isinstance(e, httpx.TransportError):
+                return 2
+            return 3
+        e = sorted(leaf_errors(exc), key=rank)[0]
+        self.status = e.response.status_code if isinstance(e, httpx.HTTPStatusError) else None
+        self.message = (str(e) or type(e).__name__)[:300]
+        self.summary = f"{type(e).__name__}: {self.message}"
+        transport = isinstance(e, httpx.TransportError)
+        code = getattr(getattr(e, "error", None), "code", None) if isinstance(e, McpError) else None
+        # A read or write timeout is not retryable: the query is slow, not transient, and a retry
+        # doubles the load. A connect or pool timeout sent nothing, so a retry is cheap.
+        sent_and_timed_out = isinstance(e, (httpx.ReadTimeout, httpx.WriteTimeout))
+        self.retryable = (transport and not sent_and_timed_out) or self.status in _RETRYABLE_STATUS
+        # The session survives an application-level JSON-RPC error. A status error, a dropped
+        # connection or "Session terminated" (code 32600) kills it, and the next call must reopen.
+        terminated = code == 32600 or "session" in self.message.lower()
+        self.session_lost = not (isinstance(e, McpError) and not terminated)
+
+
+class _Upstream:
+    def __init__(self):
+        self._session = None
+        self._task = None
+        self._close = None
+        self._lock = None
+        self._streak = 0
+        self._open_until = 0.0
+        self._last_summary = ""
+        self._last_failed_owner = None
+
+    async def _runner(self, tok, ready, close, err):
+        # The session's context managers are entered and exited by THIS task only (anyio requires
+        # it). The session lives until `close` is set; a normal exit sends the DELETE. The task
+        # returns its error, so a caller racing it reads that generation's error and no other. A
+        # cancellation is re-raised: a bare CancelledError escaping a handler kills the server.
+        mine = None
+        try:
+            async with streamablehttp_client(URL, headers={"Authorization": f"Bearer {tok}"}) as (r, w, _):
+                async with ClientSession(r, w) as s:
+                    await s.initialize()
+                    if self._task is asyncio.current_task():     # publish only while still the owner
+                        self._session = mine = s
+                    ready.set()
+                    await close.wait()
+        except asyncio.CancelledError:
+            ready.set()
+            raise
+        except BaseException as e:  # noqa: BLE001  reported to the opener through `err`, to callers as the task's result
+            err.append(e)
+            ready.set()
+            return e
+        finally:
+            if mine is not None and self._session is mine:   # never clear a session a newer owner opened
+                self._session = None
+        return None
+
+    async def _open(self):
+        tok = await get_token()
+        ready, close, err = asyncio.Event(), asyncio.Event(), []
+        task = asyncio.create_task(self._runner(tok, ready, close, err))
+        self._task, self._close = task, close            # registered before waiting: a cancelled opener can still close it
+        try:
+            await ready.wait()
+        except asyncio.CancelledError:
+            close.set()
+            raise
+        if err:
+            try:
+                await asyncio.wait_for(task, _OPEN_FAIL_WAIT)
+            except BaseException:  # noqa: BLE001, S110  the owner already failed; its error is err[0], raised next
+                pass
+            self._task = self._close = None
+            raise err[0]
+
+    async def drop(self):
+        if self._close is not None:
+            self._close.set()
+        if self._task is not None:
+            try:
+                await asyncio.wait_for(self._task, _DROP_TIMEOUT)
+            except BaseException:  # noqa: BLE001, S110  teardown is best effort; the session is gone either way
+                pass
+        self._task = self._close = self._session = None
+
+    async def session(self):
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        async with self._lock:
+            if self._session is None or self._task is None or self._task.done():
+                await self.drop()
+                await self._open()
+            return self._session, self._task
+
+    async def _drop_if(self, owner):
+        """Drop the session only while `owner` still owns it. Every call in flight on a session
+        fails when it dies; the first to notice reopens it, and the rest must not drop the new one."""
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        async with self._lock:
+            if self._task is owner:
+                await self.drop()
+
+    async def _run_on_session(self, op, s, owner):
+        """Run op(s) but never outlive the session. The transport dies in the owner task, and a
+        caller blocked on it would otherwise wait out the full read timeout."""
+        op_task = asyncio.ensure_future(op(s))
+        try:
+            done, _ = await asyncio.wait({op_task, owner}, return_when=asyncio.FIRST_COMPLETED)
+        except asyncio.CancelledError:                   # the host cancelled the call: do not orphan the op
+            op_task.cancel()
+            raise
+        if op_task in done:
+            return op_task.result()
+        op_task.cancel()
+        try:
+            await op_task
+        except BaseException:  # noqa: BLE001, S110  the cancellation or the op's own error; the owner's is raised
+            pass
+        exc = None
+        if owner.done() and not owner.cancelled():
+            try:
+                exc = owner.result()
+            except BaseException:  # noqa: BLE001, S110  a runner that raised anyway: an unexplained close
+                exc = None
+        if not isinstance(exc, Exception):
+            exc = RuntimeError("upstream session closed during the call")
+        raise exc
+
+    def _breaker_check(self):
+        now = time.time()
+        if now < self._open_until:
+            raise RuntimeError(f"Exabeam MCP: {_BREAKER_TRIP} transport failures in a row (last: {self._last_summary}); "
+                               f"refusing calls for another {self._open_until - now:.0f}s")
+
+    def _note(self, ok, owner=None):
+        if ok:
+            self._streak = 0
+            self._last_failed_owner = None
+            return
+        if owner is not None and owner is self._last_failed_owner:
+            return                       # N calls in flight on one lost session are one failure, not N
+        self._last_failed_owner = owner
+        self._streak += 1
+        if self._streak >= _BREAKER_TRIP:
+            self._open_until = time.time() + _BREAKER_HOLD
+            self._streak = 0
+            log(f"{_BREAKER_TRIP} transport failures in a row, holding off Exabeam for {_BREAKER_HOLD:.0f}s")
+
+    async def call(self, op):
+        self._breaker_check()
+        attempt = 0
+        while True:
+            owner = None
+            try:
+                s, owner = await self.session()
+                result = await self._run_on_session(op, s, owner)
+            except Exception as e:
+                leaf = _Leaf(e)
+                self._last_summary = leaf.summary
+                if leaf.status == 401:
+                    _token["exp"] = 0.0          # a rejected token is not fresh, whatever our clock says
+                if owner is not None and leaf.session_lost:
+                    await self._drop_if(owner)
+                self._note(False, owner)
+                if (leaf.retryable or (owner is not None and leaf.session_lost)) and attempt < len(_RETRY_DELAYS):
+                    await asyncio.sleep(_RETRY_DELAYS[attempt] + random.uniform(0, 0.3))  # noqa: S311
+                    attempt += 1
+                    continue
+                raise RuntimeError(leaf.summary) from e
+            self._note(True)
+            return result
+
+
+UPSTREAM = _Upstream()
 
 
 async def remote(op):
-    """Open a fresh authenticated connection to the remote Exabeam MCP and run op(session).
-    Retries rate limiting, and reports the underlying error instead of a TaskGroup wrapper."""
-    async with _slots:
-        for attempt in range(RETRIES + 1):
-            tok = await get_token()
-            try:
-                async with streamablehttp_client(URL, headers={"Authorization": f"Bearer {tok}"}) as (r, w, _):
-                    async with ClientSession(r, w) as session:
-                        await session.initialize()
-                        return await op(session)
-            except (Exception, BaseExceptionGroup) as e:
-                delay = retry_delay(e, attempt)
-                if delay is None or attempt == RETRIES:
-                    raise RuntimeError("; ".join(f"{type(x).__name__}: {x}" for x in leaf_errors(e))) from e
-                sys.stderr.write(f"bridge: Exabeam rate limited the call, retrying in {delay:.0f}s\n")
-                await asyncio.sleep(delay)
+    """Run op(session) on the process's one upstream session."""
+    return await UPSTREAM.call(op)
+
+
+async def _then_drop(coro):
+    """For the one-shot modes: run, then close the session cleanly (one DELETE)."""
+    try:
+        return await coro
+    finally:
+        await UPSTREAM.drop()
 
 
 server = Server("exabeam")
@@ -257,7 +434,7 @@ async def list_tools():
 async def call_tool(name, arguments):
     if name not in READ_TOOLS:
         raise ValueError(f"{name} is not available: aiscoring is read-only")
-    result = await remote(lambda s: s.call_tool(name, arguments or {}))
+    result = await remote(lambda s: s.call_tool(name, arguments or {}, read_timeout_seconds=_CALL_TIMEOUT))
     if (failure := error_text(result)) is not None:
         raise ValueError(canonicalize(failure)[0])
     content = result.content
@@ -379,8 +556,11 @@ async def _lookup(users):
 
 
 async def _serve():
-    async with stdio_server() as (read, write):
-        await server.run(read, write, server.create_initialization_options())
+    try:
+        async with stdio_server() as (read, write):
+            await server.run(read, write, server.create_initialization_options())
+    finally:
+        await UPSTREAM.drop()                          # one DELETE, at the end of the process
 
 
 def log(message):
@@ -400,13 +580,13 @@ def main():
             "EXABEAM_MCP_URL, EXABEAM_API_KEY, EXABEAM_API_SECRET.")
         sys.exit(1)
     if "--closure" in sys.argv:
-        asyncio.run(_closure(sys.argv[sys.argv.index("--closure") + 1:]))
+        asyncio.run(_then_drop(_closure(sys.argv[sys.argv.index("--closure") + 1:])))
         return
     if "--lookup" in sys.argv:
-        asyncio.run(_lookup(sys.argv[sys.argv.index("--lookup") + 1:]))
+        asyncio.run(_then_drop(_lookup(sys.argv[sys.argv.index("--lookup") + 1:])))
         return
     if "--check" in sys.argv:
-        asyncio.run(_check())
+        asyncio.run(_then_drop(_check()))
         return
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, _stop_on)

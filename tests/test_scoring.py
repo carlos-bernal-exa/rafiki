@@ -122,11 +122,13 @@ def _bridge_functions():
     """The bridge's pure helpers, without importing mcp/httpx."""
     tree = ast.parse((ROOT / "connector" / "exabeam-mcp-bridge.py").read_text())
     keep = [n for n in tree.body
-            if (isinstance(n, ast.FunctionDef) and n.name in ("strip_labels", "find_first", "unlabel_text", "leaf_errors", "retry_delay", "error_text",
+            if (isinstance(n, ast.ClassDef) and n.name == "_Leaf")
+            or (isinstance(n, ast.FunctionDef) and n.name in ("strip_labels", "find_first", "unlabel_text", "leaf_errors", "error_text",
                                                                "identity_tables", "same_user", "profile"))
             or (isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") in (
-                "LABEL_FIELDS", "LABEL_PATTERN", "READ_TOOLS", "PROFILE_COLUMN", "SERVICE_TABLE", "ID_KEY", "PROFILE_KEYS"))]
-    ns = {"json": json, "re": re, "httpx": __import__("httpx")}
+                "LABEL_FIELDS", "LABEL_PATTERN", "READ_TOOLS", "_RETRYABLE_STATUS", "PROFILE_COLUMN", "SERVICE_TABLE", "ID_KEY", "PROFILE_KEYS"))]
+    from mcp.shared.exceptions import McpError
+    ns = {"json": json, "re": re, "httpx": __import__("httpx"), "McpError": McpError}
     exec(compile(ast.Module(body=keep, type_ignores=[]), "bridge", "exec"), ns)
     return ns
 
@@ -237,14 +239,13 @@ def test_history_store_is_private(tmp_path, monkeypatch):
 def test_bridge_retries_rate_limits_and_unwraps_task_group_errors():
     import httpx
     b = _bridge_functions()
-    limited = httpx.HTTPStatusError("429", request=httpx.Request("POST", "https://x"),
-                                    response=httpx.Response(429, headers={"Retry-After": "3"}))
-    nested = BaseExceptionGroup("g", [ExceptionGroup("inner", [limited])])
-    assert b["leaf_errors"](nested) == [limited]
-    assert b["retry_delay"](nested, 0) == 3
-    unheaded = httpx.HTTPStatusError("429", request=limited.request, response=httpx.Response(429))
-    assert b["retry_delay"](ExceptionGroup("g", [unheaded]), 2) == 4
-    assert b["retry_delay"](ExceptionGroup("g", [ValueError("no")]), 0) is None
+    req = httpx.Request("POST", "https://x")
+    limited = httpx.HTTPStatusError("429", request=req, response=httpx.Response(429))
+    nested = BaseExceptionGroup("g", [ExceptionGroup("inner", [ValueError("noise"), limited])])
+    assert b["leaf_errors"](nested)[-1] is limited
+    leaf = b["_Leaf"](nested)
+    assert leaf.status == 429 and leaf.retryable and leaf.session_lost
+    assert not b["_Leaf"](httpx.HTTPStatusError("403", request=req, response=httpx.Response(403))).retryable
 
 
 def _run_bridge(tmp_path, env_file):
@@ -279,19 +280,17 @@ def test_bridge_logs_its_exit_when_the_client_goes_away_or_it_is_stopped(tmp_pat
     assert "received SIGTERM" in err
 
 
-def test_bridge_retries_dropped_sessions_but_not_refusals():
+def test_bridge_reopens_dropped_sessions_but_keeps_live_ones():
+    import httpx
+    from mcp.shared.exceptions import McpError
+    from mcp.types import ErrorData
     b = _bridge_functions()
-
-    class McpError(Exception):
-        pass
-
-    class BrokenResourceError(Exception):
-        pass
-
-    assert b["retry_delay"](ExceptionGroup("g", [BrokenResourceError()]), 1) == 2
-    assert b["retry_delay"](McpError("Session terminated"), 0) == 1
-    assert b["retry_delay"](McpError("Invalid params"), 0) is None
-    assert b["retry_delay"](PermissionError("403"), 0) is None
+    terminated = b["_Leaf"](McpError(ErrorData(code=32600, message="Session terminated")))
+    assert terminated.session_lost
+    bad_params = b["_Leaf"](McpError(ErrorData(code=-32602, message="Invalid params")))
+    assert not bad_params.session_lost and not bad_params.retryable
+    assert b["_Leaf"](httpx.ConnectError("refused")).retryable
+    assert not b["_Leaf"](httpx.ReadTimeout("slow")).retryable  # a slow query is not transient
 
 
 def test_bridge_shows_the_exabeam_error_instead_of_withholding_it():
