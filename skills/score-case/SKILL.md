@@ -182,6 +182,16 @@ evidence and the path is part of it.
 }
 ```
 
+`evidenceGaps` is what this case's evidence leaves open, such as a process the log doesn't
+name or a sharing link whose scope is unknown. Each gap pulls confidence toward 0.50, so leave
+these out:
+
+- The disposition, notes and closure the bridge withholds. Withholding them is the method and
+  says nothing about this case.
+- Detections the plan didn't search. That is `rawLogSampling`.
+- A source that failed to load. It is already in `unavailable`, and counting it twice costs
+  twice.
+
 Then:
 
 ```bash
