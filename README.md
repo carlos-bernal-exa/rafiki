@@ -56,10 +56,12 @@ Where it differs from AIScoring:
 - **Raw logs use AIScoring's fields.** Each detection's own `search_query`, keeping `rawLogs`
   (the original log line, where finding fields like `indicators` and `riskState` live), the
   timestamp and vendor/product.
-- **No entity context.** The MCP has no entity lookup, so roles, departments and service-account
-  flags aren't available. The skill handles that the way AIScoring handles a prompt variant that
-  omits a section: it tells the model the section is withheld on purpose, and it doesn't count as
-  a missing source, so confidence isn't marked down for it on every case.
+- **Entity context comes from context tables.** The MCP has no entity lookup.
+  `exabeam-mcp-bridge.py --lookup` pages the tenant's identity tables, found by their Title or
+  Department column, and returns only title, department, employee type, MFA, account status and
+  a service-account flag. The model can't read those tables itself, because one page holds a
+  thousand employees' names and phone numbers. There is no host lookup, and first-seen and
+  last-seen dates aren't available.
 - **The model is whichever Claude model the session runs.** AIScoring's default for this prompt
   is `gemini-3.8-flash`, so the same prompt may score differently here.
 

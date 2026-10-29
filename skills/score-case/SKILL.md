@@ -88,10 +88,18 @@ disposition another way.
    `raw logs: <error>`. If you hit 100 lines before searching every pick, add
    `raw logs: searched X of Y detections before reaching the 100-line limit`. Keep going after a
    failure: partial evidence still makes a verdict.
-5. **Entities are withheld.** The MCP has no entity lookup, so there is no `entities` section:
-   no role, department, service-account flag or first/last seen. This is a configuration
-   choice, the same as a prompt variant that omits a section. It is not a failed fetch, so it
-   does not go in `unavailable`.
+5. **Entities.** The MCP has no entity lookup. The bridge reads the tenant's identity context
+   tables for you and returns only each account's role:
+
+   ```bash
+   uv run "<skill dir>/../../connector/exabeam-mcp-bridge.py" --lookup <user> [<user> ...]
+   ```
+
+   Pass the case's users as they appear in the case. It prints each user's `records` (title,
+   department, employee type, MFA, account status, and the table each came from) and
+   `serviceAccount: true` when a service-account table lists it. This is `entities`. Add each of
+   its `unavailable` entries to Step 1.4. A user with no records is not a gap: the tenant has no
+   role on record for that account. Hosts have no lookup; there is no asset table to read.
 
 ## Step 2: reason
 
@@ -107,16 +115,14 @@ It refers to the parts of AIScoring's payload by name. Here is what each one is:
 | `timeline` | Step 1.2 |
 | `rawLogs`, `rawLogSampling` | Step 1.3 |
 | `unavailable` | Step 1.4 |
-| `entities`, role, department, service account | Withheld, see the note below |
+| `entities`, role, department, service account | Step 1.5 |
 
-AIScoring adds notes to the payload, and they apply here:
+For an account with no records, the prompt's own rule applies: say "no role on record", and
+never infer a role from a username, hostname, email address or group name. Cite the table for
+any role you use.
 
-- Always: *Sections deliberately withheld from this prompt: entities. Their absence is a
-  configuration choice, not evidence that the case lacks them.* With no entity section, the
-  prompt's own rule applies to every case: say "no role on record", and never infer a role from
-  a username, hostname, email address or group name.
-- When the timeline was cut: *The timeline holds the 50 most recent of N detections. Earlier
-  detections exist but are not shown.*
+When the timeline was cut, AIScoring adds this note to the payload, and it applies here: *The
+timeline holds the 50 most recent of N detections. Earlier detections exist but are not shown.*
 
 Two additions that are not in AIScoring's prompt:
 
@@ -215,7 +221,8 @@ Reasoning
 Confidence factors
 - <label>: <delta>
 
-Evidence gaps / unavailable sources (entity context is always withheld)
+Entities: <per user: title, department, service account, or "no role on record">
+Evidence gaps / unavailable sources
 Raw-log sampling: <sampling notes>
 What would change my mind
 Recommended actions (for the analyst; this plugin takes none)

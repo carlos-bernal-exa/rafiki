@@ -25,6 +25,9 @@ Reads creds from ~/.exabeam-mcp.env (same file socxen uses):
   --check                  validate the connection without starting the server
   --closure ID [ID ...]    print {caseId: {"stage", "closedReason"}} as JSON. For history.py
                            only: it runs outside the MCP session, so the model never sees it.
+  --lookup USER [USER ...] print each account's title, department, employee type, MFA and
+                           account status from the identity context tables, and whether a
+                           service-account table lists it. Only those fields leave the bridge.
 """
 import asyncio
 import json
@@ -65,7 +68,8 @@ READ_TOOLS = frozenset({
     "exabeam_correlation_rule_list",
     "exabeam_get_correlation_rule_details",
     "exabeam_context_table_list",
-    "exabeam_get_context_table_records",
+    # exabeam_get_context_table_records is left out on purpose: one page of an identity table is
+    # a thousand employees' names and phone numbers. --lookup reads it and returns one row's role.
 })
 
 # Case and alert results carry the disposition under these keys (AIScoring server/mapping.ts
@@ -288,6 +292,85 @@ async def _closure(case_ids):
     print(json.dumps(await remote(all_cases)))
 
 
+# ---- --lookup: entity context from the tenant's identity context tables ----
+
+# Table names differ per tenant, so tables are picked by their columns. A table with a Title or
+# Department column describes people; one named like a service-account list marks accounts.
+PROFILE_COLUMN = re.compile(r"^(title|department)$", re.I)
+SERVICE_TABLE = re.compile(r"service.?accounts?", re.I)
+ID_KEY = re.compile(r"(user(_?names?)?|email|account|login)$", re.I)
+# Only these leave the bridge. A row also holds names, phone numbers and the manager, which
+# say nothing about whether the actor fits the action.
+PROFILE_KEYS = {"title": "title", "department": "department", "employee_type": "employeeType",
+                "mfa_registered": "mfaRegistered", "user_access_status": "accountStatus"}
+PAGE = 200  # 1,000 rows per page made Exabeam answer 500 on a wide table
+
+
+def identity_tables(tables):
+    """[(id, name, "profile" | "service")] for the non-empty tables that describe accounts."""
+    out = []
+    for t in tables:
+        if not t.get("totalItems"):
+            continue
+        if any(PROFILE_COLUMN.match(a.get("displayName") or "") for a in t.get("attributes") or []):
+            out.append((t["id"], t.get("name"), "profile"))
+        elif SERVICE_TABLE.search(t.get("name") or ""):
+            out.append((t["id"], t.get("name"), "service"))
+    return out
+
+
+def same_user(user, row):
+    """True when a row is this account. Exact match on any identifier, or, for a bare username
+    (no @), on an email's local part. jdoe@partner.com never matches the employee jdoe."""
+    want = user.lower().split("\\")[-1]
+    ids = {str(x).lower().split("\\")[-1] for k, v in row.items() if ID_KEY.search(k)
+           for x in (v if isinstance(v, list) else [v]) if x}
+    return want in ids or ("@" not in want and want in {i.split("@")[0] for i in ids})
+
+
+def profile(row, table):
+    out = {"table": table}
+    for k, v in row.items():
+        if (name := PROFILE_KEYS.get(re.sub(r"^u_", "", k.lower()))) and v not in (None, "", []):
+            out[name] = v
+    return out
+
+
+async def _lookup(users):
+    async def call(session, name, args):
+        result = await session.call_tool(name, args)
+        if (failure := error_text(result)) is not None:
+            raise ValueError(failure)
+        return json.loads(result.content[0].text)
+
+    async def scan(session):
+        found = {u: {"records": []} for u in users}
+        unavailable = []
+        listed = await call(session, "exabeam_context_table_list", {})
+        for table_id, table, kind in identity_tables(listed if isinstance(listed, list) else find_first(listed, ("tables", "items")) or []):
+            pending, offset = set(users), 0
+            try:
+                while pending:
+                    page = await call(session, "exabeam_get_context_table_records",
+                                      {"arg0": {"tableId": table_id, "limit": PAGE, "offset": offset}})
+                    for row in page.get("records") or []:
+                        for u in [u for u in pending if same_user(u, row)]:
+                            pending.discard(u)
+                            if kind == "service":
+                                found[u]["serviceAccount"] = True
+                            else:
+                                found[u]["records"].append(profile(row, table))
+                    offset += PAGE
+                    if offset >= (page.get("paging") or {}).get("count", 0):
+                        break
+            except Exception as e:  # noqa: BLE001  one unreadable table must not lose the others
+                log(f"lookup: table {table} could not be read: {e!r}")
+                unavailable.append(f"entity context: table {table} could not be read")
+        return {"entities": found, "unavailable": unavailable}
+
+    print(json.dumps(await remote(scan)))
+
+
 async def _serve():
     async with stdio_server() as (read, write):
         await server.run(read, write, server.create_initialization_options())
@@ -311,6 +394,9 @@ def main():
         sys.exit(1)
     if "--closure" in sys.argv:
         asyncio.run(_closure(sys.argv[sys.argv.index("--closure") + 1:]))
+        return
+    if "--lookup" in sys.argv:
+        asyncio.run(_lookup(sys.argv[sys.argv.index("--lookup") + 1:]))
         return
     if "--check" in sys.argv:
         asyncio.run(_check())

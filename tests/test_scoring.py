@@ -122,8 +122,10 @@ def _bridge_functions():
     """The bridge's pure helpers, without importing mcp/httpx."""
     tree = ast.parse((ROOT / "connector" / "exabeam-mcp-bridge.py").read_text())
     keep = [n for n in tree.body
-            if (isinstance(n, ast.FunctionDef) and n.name in ("strip_labels", "find_first", "unlabel_text", "leaf_errors", "retry_delay", "error_text"))
-            or (isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") in ("LABEL_FIELDS", "LABEL_PATTERN", "READ_TOOLS"))]
+            if (isinstance(n, ast.FunctionDef) and n.name in ("strip_labels", "find_first", "unlabel_text", "leaf_errors", "retry_delay", "error_text",
+                                                               "identity_tables", "same_user", "profile"))
+            or (isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") in (
+                "LABEL_FIELDS", "LABEL_PATTERN", "READ_TOOLS", "PROFILE_COLUMN", "SERVICE_TABLE", "ID_KEY", "PROFILE_KEYS"))]
     ns = {"json": json, "re": re, "httpx": __import__("httpx")}
     exec(compile(ast.Module(body=keep, type_ignores=[]), "bridge", "exec"), ns)
     return ns
@@ -340,3 +342,24 @@ def test_plan_timeline_takes_a_trimmed_page_for_a_result_that_came_back_inline()
     assert [s["detection"] for s in out["searches"]] == ["d1", "d2"]
     assert out["searches"][1]["arg0"]["endTime"] == "2026-10-23T07:03:00Z"
     assert out["sampling"] == ['"A" fired 2 times; logs pulled for all of them']
+
+
+def test_lookup_returns_one_accounts_role_and_nothing_else():
+    b = _bridge_functions()
+    assert "exabeam_get_context_table_records" not in b["READ_TOOLS"]
+    tables = [
+        {"id": "okta", "name": "All Okta Users", "totalItems": 2062, "attributes": [{"displayName": "Title"}, {"displayName": "Mobile"}]},
+        {"id": "empty", "name": "Entra Users", "totalItems": 0, "attributes": [{"displayName": "Department"}]},
+        {"id": "svc", "name": "ServiceAccounts", "totalItems": 11, "attributes": [{"displayName": "Username"}]},
+        {"id": "ti", "name": "Threat Intel IPs", "totalItems": 50, "attributes": [{"displayName": "IP Address"}]},
+    ]
+    assert b["identity_tables"](tables) == [("okta", "All Okta Users", "profile"), ("svc", "ServiceAccounts", "service")]
+
+    row = {"u_user": "jdoe", "u_email": ["jdoe@corp.com"], "u_title": "IT Manager", "u_department": "IT",
+           "u_mobile": "+1 555", "u_manager": "Someone Else", "u_user_access_status": "AccountActive", "mfa_registered": True}
+    same = b["same_user"]
+    assert same("jdoe@corp.com", row) and same("JDOE", row) and same("CORP\\jdoe", row)
+    assert not same("jdoe@partner.com", row) and not same("jdoe_admin", row)
+    assert same("administrator", {"username": "administrator"})
+    assert b["profile"](row, "All Okta Users") == {"table": "All Okta Users", "title": "IT Manager", "department": "IT",
+                                                    "accountStatus": "AccountActive", "mfaRegistered": True}
