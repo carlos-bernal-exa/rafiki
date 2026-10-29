@@ -1,1 +1,5 @@
 target-version = "py311"
+
+[lint]
+# ruff 0.17 widened its default rules and CI runs the latest ruff. Pin the classic set.
+select = ["E4", "E7", "E9", "F"]
