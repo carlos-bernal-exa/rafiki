@@ -320,12 +320,19 @@ def identity_tables(tables):
 
 
 def same_user(user, row):
-    """True when a row is this account. Exact match on any identifier, or, for a bare username
-    (no @), on an email's local part. jdoe@partner.com never matches the employee jdoe."""
+    """True when a row is this account. Exact match on any identifier. A bare username (no @)
+    also matches an email's local part. An email matches a bare username only on a row that
+    holds no email, such as a service-account list: a directory that does list emails and lists
+    another domain's is another account (an acquired company's jdoe@old.com is not jdoe@corp.com)."""
     want = user.lower().split("\\")[-1]
     ids = {str(x).lower().split("\\")[-1] for k, v in row.items() if ID_KEY.search(k)
            for x in (v if isinstance(v, list) else [v]) if x}
-    return want in ids or ("@" not in want and want in {i.split("@")[0] for i in ids})
+    local = want.split("@")[0]
+    if want in ids:
+        return True
+    if "@" not in want:
+        return local in {i.split("@")[0] for i in ids}
+    return not any("@" in i for i in ids) and local in ids
 
 
 def profile(row, table):

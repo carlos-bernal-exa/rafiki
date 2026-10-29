@@ -95,7 +95,11 @@ disposition another way.
    uv run "<skill dir>/../../connector/exabeam-mcp-bridge.py" --lookup <user> [<user> ...]
    ```
 
-   Pass the case's users as they appear in the case. It prints each user's `records` (title,
+   Pass the case's users. If the case has none (a case grouped by IP or host), pass the
+   accounts its raw logs name as the actor or owner. Pass each one exactly as it appears. Do
+   not add a bare-name variant of an email: `jdoe` also matches other directories' accounts,
+   such as an acquired company's `jdoe@oldco.com`, which is a different account with its own
+   title. It prints each user's `records` (title,
    department, employee type, MFA, account status, and the table each came from) and
    `serviceAccount: true` when a service-account table lists it. This is `entities`. Add each of
    its `unavailable` entries to Step 1.4. A user with no records is not a gap: the tenant has no

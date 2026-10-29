@@ -361,5 +361,8 @@ def test_lookup_returns_one_accounts_role_and_nothing_else():
     assert same("jdoe@corp.com", row) and same("JDOE", row) and same("CORP\\jdoe", row)
     assert not same("jdoe@partner.com", row) and not same("jdoe_admin", row)
     assert same("administrator", {"username": "administrator"})
+    acquired = {"u_user": "jdoe", "u_email": ["jdoe@oldco.com"], "u_title": "Manager"}
+    assert not same("jdoe@corp.com", acquired) and same("jdoe", acquired)
+    assert same("svc-backup@corp.com", {"username": "svc-backup"})
     assert b["profile"](row, "All Okta Users") == {"table": "All Okta Users", "title": "IT Manager", "department": "IT",
                                                     "accountStatus": "AccountActive", "mfaRegistered": True}
